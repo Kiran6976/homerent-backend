@@ -92,10 +92,12 @@ bookingSchema.pre("validate", function (next) {
 });
 
 // ✅ Add first history entry, and auto-track status changes
-bookingSchema.pre("save", function (next) {
+// ✅ Auto-add history on creation or status change
+bookingSchema.pre("save", function () {
+  // Ensure array exists
   this.statusHistory = this.statusHistory || [];
 
-  // On create
+  // New booking → first history entry
   if (this.isNew) {
     this.statusHistory.push({
       status: this.status,
@@ -103,20 +105,19 @@ bookingSchema.pre("save", function (next) {
       by: null,
       note: "Booking created",
     });
-    return next();
+    return;
   }
 
-  // On update: if status changed, push to history
+  // Status changed → add history
   if (this.isModified("status")) {
     this.statusHistory.push({
       status: this.status,
       at: new Date(),
-      by: null,
-      note: "Status updated",
+      by: this.adminDecision?.approvedBy || null,
+      note: `Status changed to ${this.status}`,
     });
   }
-
-  next();
 });
+
 
 module.exports = mongoose.model("Booking", bookingSchema);
