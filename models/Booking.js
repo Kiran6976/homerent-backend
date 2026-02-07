@@ -1,3 +1,4 @@
+// models/Booking.js
 const mongoose = require("mongoose");
 
 const ALLOWED_STATUSES = [
@@ -83,18 +84,25 @@ const bookingSchema = new mongoose.Schema(
  * ✅ IMPORTANT NORMALIZER
  * Some old code is setting status = "created"
  * Convert it to "initiated" BEFORE mongoose enum validation runs.
+ *
+ * NOTE: No "next()" here → avoids "next is not a function" on newer mongoose.
  */
-bookingSchema.pre("validate", function (next) {
+bookingSchema.pre("validate", function () {
   if (this.status === "created") {
     this.status = "initiated";
   }
-  next();
+
+  // safety: if somehow status is empty
+  if (!this.status) {
+    this.status = "initiated";
+  }
 });
 
-// ✅ Add first history entry, and auto-track status changes
-// ✅ Auto-add history on creation or status change
+/**
+ * ✅ Auto-add history on creation or status change
+ * NOTE: No "next()" here.
+ */
 bookingSchema.pre("save", function () {
-  // Ensure array exists
   this.statusHistory = this.statusHistory || [];
 
   // New booking → first history entry
@@ -113,11 +121,10 @@ bookingSchema.pre("save", function () {
     this.statusHistory.push({
       status: this.status,
       at: new Date(),
-      by: this.adminDecision?.approvedBy || null,
+      by: null, // keep null; routes can push explicit entries with admin id
       note: `Status changed to ${this.status}`,
     });
   }
 });
-
 
 module.exports = mongoose.model("Booking", bookingSchema);
