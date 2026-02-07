@@ -1,3 +1,4 @@
+// routes/auth.js (FULL UPDATED FILE - includes upiId in responses)
 const express = require("express");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
@@ -12,6 +13,7 @@ const createToken = (userId, role) =>
 
 const generateOtp = () => String(Math.floor(100000 + Math.random() * 900000)); // 6 digit
 
+// ✅ IMPORTANT: always send upiId back to frontend
 const userResponse = (user) => ({
   id: user._id,
   name: user.name,
@@ -21,6 +23,11 @@ const userResponse = (user) => ({
   phone: user.phone,
   age: user.age,
   isVerified: user.isVerified,
+
+  // ✅ UPI (Landlord)
+  upiId: user.upiId || null,
+
+  // (keep if you still use these)
   razorpayAccountId: user.razorpayAccountId,
   razorpayAccountStatus: user.razorpayAccountStatus,
   razorpayRequirements: user.razorpayRequirements,
@@ -29,9 +36,6 @@ const userResponse = (user) => ({
 // ✅ REGISTER (creates user + sends OTP)
 router.post("/register", async (req, res) => {
   try {
-    // Debug once if you want:
-    // console.log("REGISTER BODY:", req.body);
-
     const { name, age, address, email, password, role, phone } = req.body;
 
     if (!name || !email || !password || !role || age === undefined || !address) {
@@ -65,14 +69,18 @@ router.post("/register", async (req, res) => {
       existingUser.otpAttempts = 0;
 
       // Optional: update details if user tried again
-      existingUser.name = name;
+      existingUser.name = String(name).trim();
       existingUser.age = ageNum;
-      existingUser.address = address;
+      existingUser.address = String(address).trim();
       existingUser.role = role;
       if (phone !== undefined) existingUser.phone = phone;
 
-      // ✅ if they re-register, update password too
-      existingUser.passwordHash = await bcrypt.hash(password, 10);
+      /**
+       * ✅ IMPORTANT FIX:
+       * Do NOT bcrypt.hash here because your User model already hashes in pre("save")
+       * If you hash here, it becomes DOUBLE HASHED and login fails.
+       */
+      existingUser.passwordHash = String(password);
 
       await existingUser.save();
       await sendOtpEmail(lowerEmail, otp);
@@ -85,20 +93,26 @@ router.post("/register", async (req, res) => {
 
     // Create new user
     const otp = generateOtp();
-    const passwordHash = await bcrypt.hash(password, 10);
 
+    /**
+     * ✅ IMPORTANT FIX:
+     * Do NOT bcrypt.hash here because your User model already hashes in pre("save")
+     */
     const user = new User({
       name: String(name).trim(),
       age: ageNum,
       address: String(address).trim(),
       email: lowerEmail,
-      passwordHash, // ✅ hashed correctly
+      passwordHash: String(password), // ✅ plain here, model will hash
       role,
       phone,
       isVerified: false,
       otpCodeHash: await bcrypt.hash(otp, 10),
       otpExpiresAt: new Date(Date.now() + 10 * 60 * 1000), // 10 min
       otpAttempts: 0,
+
+      // ✅ UPI default (optional)
+      upiId: null,
     });
 
     await user.save();
