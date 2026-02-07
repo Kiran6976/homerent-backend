@@ -1,3 +1,4 @@
+// User.js (FULL UPDATED FILE)
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 
@@ -50,27 +51,14 @@ const userSchema = new mongoose.Schema(
       trim: true,
     },
 
+    // ✅ Landlord payout info (manual UPI payout initiated from Admin panel)
     upiId: {
       type: String,
       trim: true,
+      default: null,
     },
 
-    // ✅ Razorpay Route (Linked Account) fields
-    razorpayAccountId: {
-      type: String,
-      default: null, // example: acc_xxxxx
-      trim: true,
-    },
-    razorpayAccountStatus: {
-      type: String,
-      enum: ["not_created", "created", "pending", "activated", "rejected"],
-      default: "not_created",
-    },
-    razorpayRequirements: {
-      type: Object,
-      default: {},
-    },
-
+    // ✅ OTP / verification fields
     otpCodeHash: { type: String, default: null },
     otpExpiresAt: { type: Date, default: null },
     otpAttempts: { type: Number, default: 0 },
