@@ -1,0 +1,92 @@
+const mongoose = require("mongoose");
+
+const houseSchema = new mongoose.Schema(
+  {
+    landlordId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+    },
+
+    title: {
+      type: String,
+      required: [true, "Title is required"],
+      trim: true,
+    },
+
+    description: {
+      type: String,
+      required: [true, "Description is required"],
+    },
+
+    location: {
+      type: String,
+      required: [true, "Location is required"],
+      trim: true,
+    },
+
+    // ✅ Use rent (INR) instead of "price"
+    rent: {
+      type: Number,
+      required: [true, "Rent is required"],
+      min: [0, "Rent must be positive"],
+    },
+
+    deposit: {
+      type: Number,
+      required: [true, "Deposit is required"],
+      min: [0, "Deposit must be positive"],
+    },
+
+    // ✅ booking amount set by landlord (INR)
+    bookingAmount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
+    type: {
+      type: String,
+      enum: ["apartment", "room", "house"],
+      required: true,
+    },
+
+    beds: {
+      type: Number,
+      required: true,
+      min: 1,
+    },
+
+    baths: {
+      type: Number,
+      required: true,
+      min: 1,
+    },
+
+    area: {
+      type: Number,
+      required: [true, "Area is required"],
+      min: [1, "Area must be positive"],
+    },
+
+    furnished: {
+      type: String,
+      enum: ["unfurnished", "semi", "fully"],
+      default: "unfurnished",
+    },
+
+    amenities: [{ type: String }],
+    images: [{ type: String }],
+
+    availability: {
+      type: Date,
+      default: Date.now,
+    },
+  },
+  { timestamps: true }
+);
+
+// ✅ Index for text search
+houseSchema.index({ location: "text", title: "text", description: "text" });
+
+module.exports = mongoose.model("House", houseSchema);
