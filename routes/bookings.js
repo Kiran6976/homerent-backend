@@ -1,5 +1,4 @@
 const express = require("express");
-const Razorpay = require("razorpay");
 const auth = require("../middleware/auth");
 const { roleMiddleware } = require("../middleware/role");
 const House = require("../models/House");
@@ -8,11 +7,11 @@ const Booking = require("../models/Booking");
 
 const router = express.Router();
 
-const rzp = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID,
-  key_secret: process.env.RAZORPAY_KEY_SECRET,
-});
-
+/**
+ * POST /api/bookings/initiate
+ * Tenant starts booking -> we create a Booking + return UPI link (NO Razorpay)
+ * Body: { houseId }
+ */
 router.post("/initiate", auth, roleMiddleware("tenant"), async (req, res) => {
   try {
     const { houseId } = req.body;
@@ -24,49 +23,40 @@ router.post("/initiate", auth, roleMiddleware("tenant"), async (req, res) => {
     const amount = Number(house.bookingAmount || 0);
     if (!amount || amount <= 0) return res.status(400).json({ message: "Booking amount not set" });
 
-    const landlord = await User.findById(house.landlordId).select("name email phone razorpayAccountId razorpayAccountStatus");
+    const landlord = await User.findById(house.landlordId).select("name email phone upiId");
     if (!landlord) return res.status(404).json({ message: "Landlord not found" });
 
-    if (!landlord.razorpayAccountId || landlord.razorpayAccountStatus === "not_created") {
-      return res.status(400).json({ message: "Landlord payout setup not completed yet" });
+    if (!landlord.upiId) {
+      return res.status(400).json({ message: "Landlord has not set UPI ID yet" });
     }
 
+    // Create booking
     const booking = await Booking.create({
       houseId,
       landlordId: landlord._id,
       tenantId: req.user._id,
       amount,
-      status: "initiated",
+      status: "created", // tenant initiated (not paid yet)
     });
 
-    // Create QR (single use, fixed amount)
-    const qr = await rzp.qrCode.create({
-      type: "upi_qr",
-      name: "HomeRent Booking",
-      usage: "single_use",
-      fixed_amount: true,
-      amount: Math.round(amount * 100),
-      description: `Booking for ${house.title}`,
-      notes: {
-        bookingId: String(booking._id),
-        houseId: String(house._id),
-        landlordId: String(landlord._id),
-        tenantId: String(req.user._id),
-      },
-    });
+    // Create UPI deep link
+    const pa = encodeURIComponent(landlord.upiId);
+    const pn = encodeURIComponent(landlord.name || "Landlord");
+    const am = encodeURIComponent(String(amount));
+    const tn = encodeURIComponent(`HomeRent Booking | ${booking._id}`);
 
-    booking.status = "qr_created";
-    booking.razorpayQrId = qr.id;
-    booking.qrImageUrl = qr.image_url || null;
-    booking.qrShortUrl = qr.short_url || null;
-    await booking.save();
+    const upiLink = `upi://pay?pa=${pa}&pn=${pn}&am=${am}&cu=INR&tn=${tn}`;
 
-    res.json({
+    return res.json({
       success: true,
       bookingId: String(booking._id),
-      amount: booking.amount,
-      qrImageUrl: booking.qrImageUrl,
-      qrShortUrl: booking.qrShortUrl,
+      amount,
+      currency: "INR",
+      upiLink,
+      payee: {
+        name: landlord.name,
+        upiId: landlord.upiId,
+      },
     });
   } catch (err) {
     console.error("booking initiate error:", err);
@@ -74,12 +64,59 @@ router.post("/initiate", auth, roleMiddleware("tenant"), async (req, res) => {
   }
 });
 
+/**
+ * POST /api/bookings/:id/mark-paid
+ * Tenant confirms they paid (manual flow)
+ * Body: { utr?: string }
+ */
+router.post("/:id/mark-paid", auth, roleMiddleware("tenant"), async (req, res) => {
+  try {
+    const booking = await Booking.findById(req.params.id);
+    if (!booking) return res.status(404).json({ message: "Booking not found" });
+
+    if (String(booking.tenantId) !== String(req.user._id)) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+
+    if (booking.status === "transferred") {
+      return res.status(400).json({ message: "Already transferred" });
+    }
+
+    // allow mark paid only when created/qr_created/initiated etc.
+    const allowed = ["created", "initiated", "qr_created"];
+    if (!allowed.includes(String(booking.status))) {
+      return res.status(400).json({ message: `Cannot mark paid from status: ${booking.status}` });
+    }
+
+    booking.status = "paid";
+    booking.paidAt = new Date();
+
+    // Optional: store UTR if your Booking schema supports it.
+    // If schema doesn't have this field, mongoose will ignore it (strict mode).
+    if (req.body?.utr) booking.tenantUtr = String(req.body.utr).trim();
+
+    await booking.save();
+
+    return res.json({ success: true, message: "Marked as paid", bookingId: String(booking._id) });
+  } catch (err) {
+    console.error("mark paid error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+/**
+ * GET /api/bookings/:id/status
+ */
 router.get("/:id/status", auth, async (req, res) => {
   const booking = await Booking.findById(req.params.id);
   if (!booking) return res.status(404).json({ message: "Booking not found" });
 
   const uid = String(req.user._id);
-  if (uid !== String(booking.tenantId) && uid !== String(booking.landlordId) && req.user.role !== "admin") {
+  if (
+    uid !== String(booking.tenantId) &&
+    uid !== String(booking.landlordId) &&
+    req.user.role !== "admin"
+  ) {
     return res.status(403).json({ message: "Forbidden" });
   }
 
