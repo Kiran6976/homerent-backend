@@ -25,29 +25,33 @@ const bookingSchema = new mongoose.Schema(
       min: 0,
     },
 
-    // ✅ IMPORTANT: include every status you may ever save
+    // ✅ include all statuses used by tenant flow + admin panel
     status: {
       type: String,
       enum: [
-        "created",       // (some code/models use this as default)
-        "initiated",     // when booking doc created
-        "qr_created",    // QR created successfully
-        "paid",          // Razorpay says payment success but transfer pending
-        "transferred",   // payout completed / confirmed
-        "failed",        // payment failed
-        "expired",       // QR expired
-        "cancelled",     // optional
+        "created",
+        "initiated",
+        "qr_created",
+        "paid",
+
+        // ✅ admin-panel manual verification statuses
+        "approved",
+        "rejected",
+
+        // ✅ final / other states
+        "transferred",
+        "failed",
+        "expired",
+        "cancelled",
       ],
       default: "initiated",
       index: true,
     },
 
-    // Razorpay QR related
     razorpayQrId: { type: String, default: null },
     qrImageUrl: { type: String, default: null },
     qrShortUrl: { type: String, default: null },
 
-    // optional: store webhook ids, txn ids, etc.
     razorpayPaymentId: { type: String, default: null },
     razorpayTransferId: { type: String, default: null },
   },
