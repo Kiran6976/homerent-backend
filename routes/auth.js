@@ -12,47 +12,87 @@ const createToken = (userId, role) =>
 
 const generateOtp = () => String(Math.floor(100000 + Math.random() * 900000)); // 6 digit
 
+const userResponse = (user) => ({
+  id: user._id,
+  name: user.name,
+  email: user.email,
+  role: user.role,
+  address: user.address,
+  phone: user.phone,
+  age: user.age,
+  isVerified: user.isVerified,
+  razorpayAccountId: user.razorpayAccountId,
+  razorpayAccountStatus: user.razorpayAccountStatus,
+  razorpayRequirements: user.razorpayRequirements,
+});
+
 // ✅ REGISTER (creates user + sends OTP)
 router.post("/register", async (req, res) => {
   try {
+    // Debug once if you want:
+    // console.log("REGISTER BODY:", req.body);
+
     const { name, age, address, email, password, role, phone } = req.body;
 
-    if (!name || !age || !address || !email || !password || !role) {
+    if (!name || !email || !password || !role || age === undefined || !address) {
       return res.status(400).json({ message: "Please fill in all required fields" });
     }
-    if (age < 18) return res.status(400).json({ message: "You must be at least 18 years old" });
-    if (password.length < 6) return res.status(400).json({ message: "Password must be at least 6 characters" });
 
-    const lowerEmail = email.toLowerCase();
+    const ageNum = Number(age);
+    if (Number.isNaN(ageNum)) {
+      return res.status(400).json({ message: "Age must be a valid number" });
+    }
+    if (ageNum < 18) return res.status(400).json({ message: "You must be at least 18 years old" });
+
+    if (String(password).length < 6) {
+      return res.status(400).json({ message: "Password must be at least 6 characters" });
+    }
+
+    const lowerEmail = String(email).toLowerCase().trim();
     const existingUser = await User.findOne({ email: lowerEmail });
 
+    // If user exists
     if (existingUser) {
       // if already verified, block
       if (existingUser.isVerified) {
         return res.status(400).json({ message: "Email already registered" });
       }
+
       // if not verified, resend OTP
       const otp = generateOtp();
       existingUser.otpCodeHash = await bcrypt.hash(otp, 10);
       existingUser.otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
       existingUser.otpAttempts = 0;
-      await existingUser.save();
 
+      // Optional: update details if user tried again
+      existingUser.name = name;
+      existingUser.age = ageNum;
+      existingUser.address = address;
+      existingUser.role = role;
+      if (phone !== undefined) existingUser.phone = phone;
+
+      // ✅ if they re-register, update password too
+      existingUser.passwordHash = await bcrypt.hash(password, 10);
+
+      await existingUser.save();
       await sendOtpEmail(lowerEmail, otp);
+
       return res.status(200).json({
         success: true,
         message: "OTP resent. Please verify your email.",
       });
     }
 
+    // Create new user
     const otp = generateOtp();
+    const passwordHash = await bcrypt.hash(password, 10);
 
     const user = new User({
-      name,
-      age,
-      address,
+      name: String(name).trim(),
+      age: ageNum,
+      address: String(address).trim(),
       email: lowerEmail,
-      passwordHash: password,
+      passwordHash, // ✅ hashed correctly
       role,
       phone,
       isVerified: false,
@@ -64,13 +104,13 @@ router.post("/register", async (req, res) => {
     await user.save();
     await sendOtpEmail(lowerEmail, otp);
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
       message: "Registered. OTP sent to email. Please verify.",
     });
   } catch (err) {
     console.error("Registration error:", err);
-    res.status(500).json({ message: "Server error" });
+    return res.status(500).json({ message: err.message || "Server error" });
   }
 });
 
@@ -83,11 +123,17 @@ router.post("/verify-email", async (req, res) => {
       return res.status(400).json({ message: "Email and OTP are required" });
     }
 
-    const user = await User.findOne({ email: email.toLowerCase() });
+    const user = await User.findOne({ email: String(email).toLowerCase().trim() });
     if (!user) return res.status(400).json({ message: "User not found" });
 
     if (user.isVerified) {
-      return res.status(200).json({ success: true, message: "Already verified" });
+      const token = createToken(user._id, user.role);
+      return res.status(200).json({
+        success: true,
+        message: "Already verified",
+        token,
+        user: userResponse(user),
+      });
     }
 
     if (!user.otpCodeHash || !user.otpExpiresAt) {
@@ -98,7 +144,6 @@ router.post("/verify-email", async (req, res) => {
       return res.status(400).json({ message: "OTP expired. Please request a new OTP." });
     }
 
-    // optional brute-force protection
     if (user.otpAttempts >= 5) {
       return res.status(429).json({ message: "Too many attempts. Please request a new OTP." });
     }
@@ -116,36 +161,27 @@ router.post("/verify-email", async (req, res) => {
     user.otpAttempts = 0;
     await user.save();
 
-    // ✅ token after verification (nice UX)
     const token = createToken(user._id, user.role);
 
-    res.json({
+    return res.json({
       success: true,
       message: "Email verified successfully",
       token,
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        address: user.address,
-        phone: user.phone,
-        age: user.age,
-      },
+      user: userResponse(user),
     });
   } catch (err) {
     console.error("Verify error:", err);
-    res.status(500).json({ message: "Server error" });
+    return res.status(500).json({ message: err.message || "Server error" });
   }
 });
 
-// ✅ RESEND OTP (optional separate endpoint)
+// ✅ RESEND OTP
 router.post("/resend-otp", async (req, res) => {
   try {
     const { email } = req.body;
     if (!email) return res.status(400).json({ message: "Email is required" });
 
-    const user = await User.findOne({ email: email.toLowerCase() });
+    const user = await User.findOne({ email: String(email).toLowerCase().trim() });
     if (!user) return res.status(400).json({ message: "User not found" });
     if (user.isVerified) return res.status(400).json({ message: "Email already verified" });
 
@@ -156,14 +192,13 @@ router.post("/resend-otp", async (req, res) => {
     await user.save();
 
     await sendOtpEmail(user.email, otp);
-    res.json({ success: true, message: "OTP sent again" });
+    return res.json({ success: true, message: "OTP sent again" });
   } catch (err) {
     console.error("Resend OTP error:", err);
-    res.status(500).json({ message: "Server error" });
+    return res.status(500).json({ message: err.message || "Server error" });
   }
 });
 
-// ✅ LOGIN (only if verified)
 // ✅ LOGIN (OTP required for tenant/landlord, NOT required for admin)
 router.post("/login", async (req, res) => {
   try {
@@ -173,60 +208,39 @@ router.post("/login", async (req, res) => {
       return res.status(400).json({ message: "Please provide email and password" });
     }
 
-    const user = await User.findOne({ email: email.toLowerCase() });
+    const user = await User.findOne({ email: String(email).toLowerCase().trim() });
     if (!user) return res.status(400).json({ message: "Invalid credentials" });
 
-    // ✅ Only tenant/landlord must verify email
     if (!user.isVerified && user.role !== "admin") {
       return res.status(403).json({ message: "Please verify your email first" });
     }
 
-    // Safety check (prevents bcrypt crash if old records exist)
     if (!user.passwordHash) {
       return res.status(400).json({
         message: "Password not set for this account. Please register again.",
       });
     }
 
+    // uses your model method
     const isMatch = await user.comparePassword(password);
     if (!isMatch) return res.status(400).json({ message: "Invalid credentials" });
 
     const token = createToken(user._id, user.role);
 
-    res.json({
+    return res.json({
       success: true,
       token,
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        address: user.address,
-        phone: user.phone,
-        age: user.age,
-        isVerified: user.isVerified,
-      },
+      user: userResponse(user),
     });
   } catch (err) {
     console.error("Login error:", err);
-    res.status(500).json({ message: "Server error" });
+    return res.status(500).json({ message: err.message || "Server error" });
   }
 });
 
-
 // ✅ ME
 router.get("/me", authMiddleware, async (req, res) => {
-  res.json({
-    user: {
-      id: req.user._id,
-      name: req.user.name,
-      email: req.user.email,
-      role: req.user.role,
-      address: req.user.address,
-      phone: req.user.phone,
-      age: req.user.age,
-    },
-  });
+  return res.json({ user: userResponse(req.user) });
 });
 
 module.exports = router;
