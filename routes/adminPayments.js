@@ -8,20 +8,15 @@ const router = express.Router();
 
 /**
  * GET /api/admin/bookings?status=pending|approved|rejected|all
- * - pending means: "paid" or "qr_created" (you can tune this)
- * - approved history: "approved" or "transferred"
  */
 router.get("/bookings", authMiddleware, requireAdmin, async (req, res) => {
   try {
     const status = String(req.query.status || "pending").toLowerCase();
-
     let query = {};
 
     if (status === "pending") {
-      // ✅ what admin should verify
       query.status = { $in: ["paid", "qr_created"] };
     } else if (status === "approved") {
-      // ✅ history screen: approved (and transferred if you use it later)
       query.status = { $in: ["approved", "transferred"] };
     } else if (status === "rejected") {
       query.status = "rejected";
@@ -46,31 +41,28 @@ router.get("/bookings", authMiddleware, requireAdmin, async (req, res) => {
 
 /**
  * PUT /api/admin/bookings/:id/approve
- * body: { note?: string }
  */
 router.put("/bookings/:id/approve", authMiddleware, requireAdmin, async (req, res) => {
   try {
     const { note } = req.body || {};
-
     const booking = await Booking.findById(req.params.id);
+
     if (!booking) return res.status(404).json({ message: "Booking not found" });
 
+    if (booking.status !== "paid") {
+      return res.status(400).json({
+        message: `Only PAID bookings can be approved. Current status: ${booking.status}`,
+      });
+    }
+
     booking.status = "approved";
+    booking.adminDecision = {
+      approvedBy: req.user._id,
+      approvedAt: new Date(),
+      note: String(note || "").trim(),
+    };
 
-    booking.adminDecision = booking.adminDecision || {};
-    booking.adminDecision.approvedBy = req.user._id;
-    booking.adminDecision.approvedAt = new Date();
-    booking.adminDecision.note = String(note || "").trim();
-
-    booking.statusHistory = booking.statusHistory || [];
-    booking.statusHistory.push({
-      status: "approved",
-      at: new Date(),
-      by: req.user._id,
-      note: booking.adminDecision.note || "Approved by admin",
-    });
-
-    await booking.save();
+    await booking.save(); // ✅ history auto-added by schema
 
     res.json({ success: true, message: "Payment approved", booking });
   } catch (err) {
@@ -81,31 +73,28 @@ router.put("/bookings/:id/approve", authMiddleware, requireAdmin, async (req, re
 
 /**
  * PUT /api/admin/bookings/:id/reject
- * body: { note?: string }
  */
 router.put("/bookings/:id/reject", authMiddleware, requireAdmin, async (req, res) => {
   try {
     const { note } = req.body || {};
-
     const booking = await Booking.findById(req.params.id);
+
     if (!booking) return res.status(404).json({ message: "Booking not found" });
 
+    if (booking.status !== "paid") {
+      return res.status(400).json({
+        message: `Only PAID bookings can be rejected. Current status: ${booking.status}`,
+      });
+    }
+
     booking.status = "rejected";
+    booking.adminDecision = {
+      rejectedBy: req.user._id,
+      rejectedAt: new Date(),
+      note: String(note || "").trim(),
+    };
 
-    booking.adminDecision = booking.adminDecision || {};
-    booking.adminDecision.rejectedBy = req.user._id;
-    booking.adminDecision.rejectedAt = new Date();
-    booking.adminDecision.note = String(note || "").trim();
-
-    booking.statusHistory = booking.statusHistory || [];
-    booking.statusHistory.push({
-      status: "rejected",
-      at: new Date(),
-      by: req.user._id,
-      note: booking.adminDecision.note || "Rejected by admin",
-    });
-
-    await booking.save();
+    await booking.save(); // ✅ history auto-added
 
     res.json({ success: true, message: "Payment rejected", booking });
   } catch (err) {

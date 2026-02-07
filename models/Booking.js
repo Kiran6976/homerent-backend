@@ -1,5 +1,16 @@
-// models/Booking.js
 const mongoose = require("mongoose");
+
+const ALLOWED_STATUSES = [
+  "initiated",
+  "qr_created",
+  "paid",
+  "approved",
+  "rejected",
+  "transferred",
+  "failed",
+  "expired",
+  "cancelled",
+];
 
 const bookingSchema = new mongoose.Schema(
   {
@@ -25,20 +36,10 @@ const bookingSchema = new mongoose.Schema(
       min: 0,
     },
 
-    // ✅ all statuses your app may set
+    // ✅ Allowed statuses
     status: {
       type: String,
-      enum: [
-        "initiated",
-        "qr_created",
-        "paid",
-        "approved",
-        "rejected",
-        "transferred",
-        "failed",
-        "expired",
-        "cancelled",
-      ],
+      enum: ALLOWED_STATUSES,
       default: "initiated",
       index: true,
     },
@@ -48,13 +49,17 @@ const bookingSchema = new mongoose.Schema(
     qrImageUrl: { type: String, default: null },
     qrShortUrl: { type: String, default: null },
 
-    // Optional if you later store payment/transfer ids
+    // Optional payment ids
     razorpayPaymentId: { type: String, default: null },
     razorpayTransferId: { type: String, default: null },
 
+    // ✅ Admin payout tracking (your Admin UI uses UTR)
+    payoutTxnId: { type: String, default: null }, // UTR
+    payoutAt: { type: Date, default: null },
+
     // ✅ Admin decision info (for history screen)
     adminDecision: {
-      approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null }, // admin user id
+      approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
       approvedAt: { type: Date, default: null },
       rejectedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
       rejectedAt: { type: Date, default: null },
@@ -66,7 +71,7 @@ const bookingSchema = new mongoose.Schema(
       {
         status: { type: String, required: true },
         at: { type: Date, default: Date.now },
-        by: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null }, // who did it (admin/tenant/system)
+        by: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
         note: { type: String, default: "" },
       },
     ],
@@ -74,17 +79,43 @@ const bookingSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// ✅ Auto-add first history entry
+/**
+ * ✅ IMPORTANT NORMALIZER
+ * Some old code is setting status = "created"
+ * Convert it to "initiated" BEFORE mongoose enum validation runs.
+ */
+bookingSchema.pre("validate", function (next) {
+  if (this.status === "created") {
+    this.status = "initiated";
+  }
+  next();
+});
+
+// ✅ Add first history entry, and auto-track status changes
 bookingSchema.pre("save", function (next) {
+  this.statusHistory = this.statusHistory || [];
+
+  // On create
   if (this.isNew) {
-    this.statusHistory = this.statusHistory || [];
     this.statusHistory.push({
       status: this.status,
       at: new Date(),
       by: null,
       note: "Booking created",
     });
+    return next();
   }
+
+  // On update: if status changed, push to history
+  if (this.isModified("status")) {
+    this.statusHistory.push({
+      status: this.status,
+      at: new Date(),
+      by: null,
+      note: "Status updated",
+    });
+  }
+
   next();
 });
 
