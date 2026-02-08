@@ -36,6 +36,10 @@ const bookingSchema = new mongoose.Schema(
       required: true,
       min: 0,
     },
+    // add inside bookingSchema fields
+cancelledAt: { type: Date, default: null },
+cancelNote: { type: String, default: "" },
+
 
     // ✅ Allowed statuses
     status: {

@@ -82,6 +82,28 @@ const houseSchema = new mongoose.Schema(
       type: Date,
       default: Date.now,
     },
+    status: {
+      type: String,
+      enum: ["available", "rented"],
+      default: "available",
+      index: true,
+    },
+
+    currentTenantId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+      index: true,
+    },
+
+    currentBookingId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Booking",
+      default: null,
+    },
+
+    rentedAt: { type: Date, default: null },
+
   },
   { timestamps: true }
 );

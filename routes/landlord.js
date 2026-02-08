@@ -1,6 +1,7 @@
-// routes/landlord.js (FULL UPDATED FILE)
+// routes/landlord.js (UPDATED FULL FILE)
 const express = require("express");
 const User = require("../models/User");
+const House = require("../models/House");
 const authMiddleware = require("../middleware/auth");
 const { roleMiddleware } = require("../middleware/role");
 
@@ -9,7 +10,7 @@ const router = express.Router();
 /**
  * PUT /api/landlord/upi
  * Landlord updates their UPI ID
- * ✅ Also returns updated user so frontend can update profile and redirect
+ * ✅ returns updated user so frontend can update localStorage/profile
  */
 router.put("/upi", authMiddleware, roleMiddleware("landlord"), async (req, res) => {
   try {
@@ -21,7 +22,7 @@ router.put("/upi", authMiddleware, roleMiddleware("landlord"), async (req, res) 
 
     const cleaned = String(upiId).trim();
 
-    // Simple validation: must contain "@"
+    // simple validation: must contain "@"
     if (!cleaned.includes("@")) {
       return res.status(400).json({ message: "Invalid UPI ID format (example: name@bank)" });
     }
@@ -32,7 +33,6 @@ router.put("/upi", authMiddleware, roleMiddleware("landlord"), async (req, res) 
     user.upiId = cleaned;
     await user.save();
 
-    // ✅ send updated user object back (so frontend can store in localStorage)
     const updatedUser = {
       id: user._id,
       name: user.name,
@@ -58,8 +58,8 @@ router.put("/upi", authMiddleware, roleMiddleware("landlord"), async (req, res) 
 });
 
 /**
- * ✅ OPTIONAL: Clear UPI ID (if you want)
  * DELETE /api/landlord/upi
+ * Optional: clear UPI ID
  */
 router.delete("/upi", authMiddleware, roleMiddleware("landlord"), async (req, res) => {
   try {
@@ -91,5 +91,105 @@ router.delete("/upi", authMiddleware, roleMiddleware("landlord"), async (req, re
     return res.status(500).json({ message: "Server error" });
   }
 });
+
+/**
+ * ✅ NEW
+ * GET /api/landlord/tenants
+ * Landlord views which tenant is occupying which house
+ * Returns: [{ house..., tenant..., booking... }]
+ *
+ * Requires House model fields:
+ * - status: "available" | "rented"
+ * - currentTenantId
+ * - currentBookingId
+ * - rentedAt
+ */
+router.get("/tenants", authMiddleware, roleMiddleware("landlord"), async (req, res) => {
+  try {
+    const houses = await House.find({
+      landlordId: req.user._id,
+      status: "rented",
+      currentTenantId: { $ne: null },
+    })
+      .sort({ rentedAt: -1 })
+      .populate("currentTenantId", "name email phone address")
+      .populate("currentBookingId", "amount status createdAt updatedAt payoutTxnId payoutAt");
+
+    const tenants = houses.map((h) => ({
+      house: {
+        id: String(h._id),
+        title: h.title,
+        location: h.location,
+        rent: h.rent,
+        bookingAmount: h.bookingAmount,
+        rentedAt: h.rentedAt,
+        images: h.images || [],
+      },
+      tenant: h.currentTenantId
+        ? {
+            id: String(h.currentTenantId._id),
+            name: h.currentTenantId.name,
+            email: h.currentTenantId.email,
+            phone: h.currentTenantId.phone,
+            address: h.currentTenantId.address,
+          }
+        : null,
+      booking: h.currentBookingId
+        ? {
+            id: String(h.currentBookingId._id),
+            amount: h.currentBookingId.amount,
+            status: h.currentBookingId.status,
+            payoutTxnId: h.currentBookingId.payoutTxnId || null,
+            payoutAt: h.currentBookingId.payoutAt || null,
+            createdAt: h.currentBookingId.createdAt,
+            updatedAt: h.currentBookingId.updatedAt,
+          }
+        : null,
+    }));
+
+    return res.json({ success: true, tenants });
+  } catch (err) {
+    console.error("Landlord tenants error:", err);
+    return res.status(500).json({ message: "Server error" });
+  }
+});
+
+/**
+ * ✅ OPTIONAL (recommended)
+ * POST /api/landlord/houses/:id/vacate
+ * Landlord marks tenant as "left" (makes house available again)
+ */
+router.post(
+  "/houses/:id/vacate",
+  authMiddleware,
+  roleMiddleware("landlord"),
+  async (req, res) => {
+    try {
+      const house = await House.findOne({
+        _id: req.params.id,
+        landlordId: req.user._id,
+      });
+
+      if (!house) return res.status(404).json({ message: "House not found" });
+
+      // If already available, do nothing
+      if (house.status !== "rented" && !house.currentTenantId) {
+        return res.json({ success: true, message: "House already available" });
+      }
+
+      house.status = "available";
+      house.currentTenantId = null;
+      house.currentBookingId = null;
+      house.rentedAt = null;
+
+      await house.save();
+
+      return res.json({ success: true, message: "House marked as available", houseId: String(house._id) });
+    } catch (err) {
+      console.error("Vacate error:", err);
+      return res.status(500).json({ message: "Server error" });
+    }
+  }
+);
 
 module.exports = router;

@@ -2,7 +2,6 @@ const express = require("express");
 const House = require("../models/House");
 const authMiddleware = require("../middleware/auth");
 const { roleMiddleware, ownerMiddleware } = require("../middleware/role");
-const User = require("../models/User"); // at top if not already
 
 const router = express.Router();
 
@@ -13,7 +12,8 @@ router.get("/", async (req, res) => {
   try {
     const { location, minRent, maxRent, type, beds, search } = req.query;
 
-    let query = {};
+    // ✅ Only show available houses by default
+    let query = { status: "available" };
 
     if (location) {
       query.location = { $regex: location, $options: "i" };
@@ -102,6 +102,7 @@ router.post("/", authMiddleware, roleMiddleware("landlord"), async (req, res) =>
       location,
       rent,
       deposit,
+      bookingAmount, // ✅ ADD
       type,
       beds,
       baths,
@@ -113,33 +114,37 @@ router.post("/", authMiddleware, roleMiddleware("landlord"), async (req, res) =>
     } = req.body;
 
     // Validation
-    if (!title || !description || !location || !rent || !deposit) {
-      return res
-        .status(400)
-        .json({ message: "Please fill in all required fields" });
+    if (!title || !description || !location || rent === undefined || deposit === undefined) {
+      return res.status(400).json({ message: "Please fill in all required fields" });
     }
 
-    if (rent <= 0 || deposit <= 0) {
-      return res
-        .status(400)
-        .json({ message: "Rent and deposit must be positive numbers" });
+    if (Number(rent) <= 0 || Number(deposit) <= 0) {
+      return res.status(400).json({ message: "Rent and deposit must be positive numbers" });
     }
 
     const house = new House({
-      landlordId: req.user._id, // ✅ Always from token (safe)
+      landlordId: req.user._id,
       title,
       description,
       location,
-      rent,
-      deposit,
+      rent: Number(rent),
+      deposit: Number(deposit),
+
+      // ✅ Save bookingAmount (default 0)
+      bookingAmount: Number(bookingAmount || 0),
+
       type,
-      beds,
-      baths,
-      area,
+      beds: Number(beds),
+      baths: Number(baths),
+      area: Number(area),
       furnished,
       amenities,
       images,
       availability,
+
+      // ✅ Default availability status
+      status: "available",
+      currentTenantId: null,
     });
 
     await house.save();
@@ -186,10 +191,18 @@ router.put(
   ownerMiddleware(House),
   async (req, res) => {
     try {
-      const updates = req.body;
+      const updates = { ...req.body };
 
       // Prevent changing landlordId
       delete updates.landlordId;
+      delete updates.currentTenantId; // ✅ landlord shouldn't set tenant directly
+      delete updates.status;          // ✅ landlord shouldn't force rented/available
+
+      // ✅ Normalize numeric fields (important)
+      const numericFields = ["rent", "deposit", "bookingAmount", "beds", "baths", "area"];
+      for (const f of numericFields) {
+        if (updates[f] !== undefined) updates[f] = Number(updates[f] || 0);
+      }
 
       const house = await House.findByIdAndUpdate(
         req.params.id,
@@ -241,6 +254,11 @@ router.get("/:id/payment", authMiddleware, async (req, res) => {
     const house = await House.findById(req.params.id).populate("landlordId", "name upiId");
     if (!house) return res.status(404).json({ message: "House not found" });
 
+    // ✅ prevent payments on non-available house
+    if (house.status && house.status !== "available") {
+      return res.status(400).json({ message: "This house is not available anymore" });
+    }
+
     const landlord = house.landlordId;
     if (!landlord?.upiId) {
       return res.status(400).json({ message: "Landlord has not set UPI ID yet" });
@@ -251,7 +269,6 @@ router.get("/:id/payment", authMiddleware, async (req, res) => {
       return res.status(400).json({ message: "Booking amount is not set for this house" });
     }
 
-    // UPI deep link (unique per house via tn)
     const pa = encodeURIComponent(landlord.upiId);
     const pn = encodeURIComponent(landlord.name || "Landlord");
     const am = encodeURIComponent(String(bookingAmount));
@@ -273,6 +290,5 @@ router.get("/:id/payment", authMiddleware, async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 });
-
 
 module.exports = router;
