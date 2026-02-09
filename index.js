@@ -7,6 +7,8 @@ dotenv.config();
 
 const app = express();
 
+const visitsRoutes = require("./routes/visits");
+
 // ✅ Connect to MongoDB
 connectDB();
 
@@ -56,6 +58,8 @@ app.use("/api/admin", require("./routes/adminPayments")); // ✅ NEW
 // ✅ Booking + payment routes
 app.use("/api/bookings", require("./routes/bookings"));
 app.use("/api/payments", require("./routes/payments"));
+app.use("/api/visits", visitsRoutes);
+
 
 // ❌ Remove Razorpay Route routes (no longer used)
 // app.use("/api/route", require("./routes/route"));
