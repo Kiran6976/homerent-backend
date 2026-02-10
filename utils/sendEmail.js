@@ -1,4 +1,4 @@
-// sendEmail.js
+// utils/sendEmail.js
 const sgMail = require("@sendgrid/mail");
 
 if (!process.env.SENDGRID_API_KEY) {
@@ -6,7 +6,6 @@ if (!process.env.SENDGRID_API_KEY) {
 }
 
 sgMail.setApiKey(process.env.SENDGRID_API_KEY);
-
 console.log("✅ SendGrid Web API initialized");
 
 /* =========================
@@ -31,7 +30,7 @@ async function sendOtpEmail(to, otp) {
     {
       to,
       from: {
-        email: process.env.FROM_EMAIL, // must be verified in SendGrid
+        email: process.env.FROM_EMAIL,
         name: "HomeRent",
       },
       subject: "Your HomeRent OTP Code",
@@ -49,52 +48,37 @@ async function sendOtpEmail(to, otp) {
 }
 
 /* =========================
-   BOOKING EMAIL → TENANT
+   RESET PASSWORD EMAIL
 ========================= */
-async function sendBookingTenantEmail(tenant, booking, house) {
+async function sendResetPasswordEmail(to, resetLink) {
   return safeSend(
     {
-      to: tenant.email,
+      to,
       from: {
         email: process.env.FROM_EMAIL,
         name: "HomeRent",
       },
-      subject: "Booking Confirmed ✅ | HomeRent",
+      subject: "Reset your HomeRent password",
       html: `
-        <h2>Booking Confirmed 🎉</h2>
-        <p>Hi <b>${tenant.name}</b>,</p>
-        <p>Your payment of ₹${booking.amount} was successful.</p>
-        <p><b>Property:</b> ${house.title}</p>
+        <div style="font-family: Arial; line-height: 1.6">
+          <h2>Password Reset</h2>
+          <p>We received a request to reset your password.</p>
+          <p>
+            <a href="${resetLink}" style="display:inline-block;padding:10px 14px;background:#4f46e5;color:#fff;border-radius:8px;text-decoration:none">
+              Reset Password
+            </a>
+          </p>
+          <p>If the button doesn't work, copy and paste this link:</p>
+          <p>${resetLink}</p>
+          <p>This link expires in <b>15 minutes</b>.</p>
+        </div>
       `,
     },
-    "BOOKING_TENANT_EMAIL"
-  );
-}
-
-/* =========================
-   BOOKING EMAIL → LANDLORD
-========================= */
-async function sendBookingLandlordEmail(landlord, tenant, booking, house) {
-  return safeSend(
-    {
-      to: landlord.email,
-      from: {
-        email: process.env.FROM_EMAIL,
-        name: "HomeRent",
-      },
-      subject: "You Received a Booking Payment 💰 | HomeRent",
-      html: `
-        <h2>Payment Received 💰</h2>
-        <p><b>Amount:</b> ₹${booking.amount}</p>
-        <p><b>Tenant:</b> ${tenant.name} (${tenant.email})</p>
-      `,
-    },
-    "BOOKING_LANDLORD_EMAIL"
+    "RESET_PASSWORD_EMAIL"
   );
 }
 
 module.exports = {
   sendOtpEmail,
-  sendBookingTenantEmail,
-  sendBookingLandlordEmail,
+  sendResetPasswordEmail,
 };

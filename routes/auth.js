@@ -1,10 +1,11 @@
-// routes/auth.js (FULL UPDATED FILE - includes upiId in responses)
+// routes/auth.js (FULL UPDATED FILE - includes upiId in responses + forgot/reset password)
 const express = require("express");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
+const crypto = require("crypto");
 const User = require("../models/User");
 const authMiddleware = require("../middleware/auth");
-const { sendOtpEmail } = require("../utils/sendEmail");
+const { sendOtpEmail, sendResetPasswordEmail } = require("../utils/sendEmail");
 
 const router = express.Router();
 
@@ -248,6 +249,88 @@ router.post("/login", async (req, res) => {
     });
   } catch (err) {
     console.error("Login error:", err);
+    return res.status(500).json({ message: err.message || "Server error" });
+  }
+});
+
+// ✅ FORGOT PASSWORD (send reset link)
+router.post("/forgot-password", async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ message: "Email is required" });
+
+    const lowerEmail = String(email).toLowerCase().trim();
+    const user = await User.findOne({ email: lowerEmail });
+
+    // ✅ Don't reveal if email exists (security best practice)
+    const genericMsg = "If an account exists with this email, a reset link has been sent.";
+
+    if (!user) {
+      return res.json({ success: true, message: genericMsg });
+    }
+
+    // Create token (raw) + store hash in DB
+    const rawToken = crypto.randomBytes(32).toString("hex");
+    const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
+
+    user.passwordResetTokenHash = tokenHash;
+    user.passwordResetExpiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 min
+    await user.save();
+
+    // Build frontend reset link
+    // ✅ Set FRONTEND_URL in .env (fallback to CLIENT_URL)
+    const baseUrl = process.env.FRONTEND_URL || process.env.CLIENT_URL;
+    const resetLink = `${baseUrl}/reset-password/${rawToken}`;
+
+    await sendResetPasswordEmail(user.email, resetLink);
+
+    return res.json({ success: true, message: genericMsg });
+  } catch (err) {
+    console.error("Forgot password error:", err);
+    return res.status(500).json({ message: err.message || "Server error" });
+  }
+});
+
+// ✅ RESET PASSWORD (verify token + set new password)
+router.post("/reset-password/:token", async (req, res) => {
+  try {
+    const { token } = req.params;
+    const { password } = req.body;
+
+    if (!token) return res.status(400).json({ message: "Token missing" });
+    if (!password) return res.status(400).json({ message: "Password is required" });
+
+    if (String(password).length < 6) {
+      return res.status(400).json({ message: "Password must be at least 6 characters" });
+    }
+
+    const tokenHash = crypto.createHash("sha256").update(String(token)).digest("hex");
+
+    const user = await User.findOne({
+      passwordResetTokenHash: tokenHash,
+      passwordResetExpiresAt: { $gt: new Date() },
+    });
+
+    if (!user) {
+      return res.status(400).json({ message: "Reset link is invalid or expired" });
+    }
+
+    // ✅ IMPORTANT:
+    // Set passwordHash = plain password. Your pre("save") will hash it.
+    user.passwordHash = String(password);
+
+    // Clear reset fields
+    user.passwordResetTokenHash = null;
+    user.passwordResetExpiresAt = null;
+
+    await user.save();
+
+    return res.json({
+      success: true,
+      message: "Password updated successfully. Please login.",
+    });
+  } catch (err) {
+    console.error("Reset password error:", err);
     return res.status(500).json({ message: err.message || "Server error" });
   }
 });
