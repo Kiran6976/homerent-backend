@@ -1,4 +1,4 @@
-// routes/bookings.js (FULL UPDATED FILE)
+// routes/bookings.js
 const express = require("express");
 const auth = require("../middleware/auth");
 const { roleMiddleware } = require("../middleware/role");
@@ -9,20 +9,18 @@ const Booking = require("../models/Booking");
 const router = express.Router();
 
 /**
- * Helper: statuses that count as "active" for locking house/landlord
- * - These statuses mean: tenant has started/paid/processing, so we block another booking.
+ * Statuses considered "active" and should block parallel bookings
  */
-const ACTIVE_STATUSES = ["initiated", "qr_created", "paid", "approved", "transferred"];
+const ACTIVE_STATUSES = ["initiated", "qr_created", "payment_submitted", "paid", "approved", "transferred"];
 
 /**
- * ✅ NEW: statuses that count as "My Rents"
- * - Tenant sees only houses that are actually rented (admin approved)
+ * Tenant sees only actually rented houses
  */
 const RENT_STATUSES = ["approved", "transferred"];
 
 /**
  * GET /api/bookings/my
- * Tenant sees their bookings (so "invisible" booking becomes visible)
+ * Tenant sees all their bookings
  */
 router.get("/my", auth, roleMiddleware("tenant"), async (req, res) => {
   try {
@@ -39,9 +37,8 @@ router.get("/my", auth, roleMiddleware("tenant"), async (req, res) => {
 });
 
 /**
- * ✅ NEW
  * GET /api/bookings/my-rents
- * Tenant sees only RENTED houses (admin approved/transferred)
+ * Tenant sees only RENTED houses (approved/transferred)
  */
 router.get("/my-rents", auth, roleMiddleware("tenant"), async (req, res) => {
   try {
@@ -56,10 +53,7 @@ router.get("/my-rents", auth, roleMiddleware("tenant"), async (req, res) => {
       )
       .populate("landlordId", "name email phone");
 
-    // optional convenience: return houses directly too
-    const houses = bookings
-      .map((b) => b.houseId)
-      .filter(Boolean);
+    const houses = bookings.map((b) => b.houseId).filter(Boolean);
 
     return res.json({ success: true, bookings, houses });
   } catch (err) {
@@ -70,41 +64,35 @@ router.get("/my-rents", auth, roleMiddleware("tenant"), async (req, res) => {
 
 /**
  * PUT /api/bookings/:id/cancel
- * Tenant cancels their booking (fixes "invisible active booking" problem)
+ * Tenant cancels their booking
  * Body: { note?: string }
  *
- * ✅ IMPORTANT RULE:
- * - Tenant CAN cancel even if status is "approved"
- * - Tenant CANNOT cancel once status is "transferred"
+ * Rules:
+ * - Can cancel until transferred
+ * - Cannot cancel already rejected/cancelled/failed/expired
  */
 router.put("/:id/cancel", auth, roleMiddleware("tenant"), async (req, res) => {
   try {
     const booking = await Booking.findById(req.params.id);
     if (!booking) return res.status(404).json({ message: "Booking not found" });
 
-    // Only tenant who created it can cancel
     if (String(booking.tenantId) !== String(req.user._id)) {
       return res.status(403).json({ message: "Forbidden" });
     }
 
-    // ❌ Cannot cancel after final transfer
     if (String(booking.status) === "transferred") {
       return res.status(400).json({ message: "Cannot cancel after transfer" });
     }
 
-    // ❌ Cannot cancel if already rejected/cancelled/failed/expired
-    // (approved is cancellable now ✅)
     const nonCancellable = ["rejected", "cancelled", "failed", "expired"];
     if (nonCancellable.includes(String(booking.status))) {
       return res.status(400).json({ message: `Cannot cancel booking in status: ${booking.status}` });
     }
 
-    // ✅ Mark cancelled
     booking.status = "cancelled";
     booking.cancelledAt = new Date();
     booking.cancelNote = String(req.body?.note || "").trim();
 
-    // Optional: status history
     booking.statusHistory = booking.statusHistory || [];
     booking.statusHistory.push({
       status: "cancelled",
@@ -129,7 +117,7 @@ router.put("/:id/cancel", auth, roleMiddleware("tenant"), async (req, res) => {
 
 /**
  * POST /api/bookings/initiate
- * Tenant starts booking -> create a Booking + return UPI deep link
+ * Tenant starts booking -> create Booking + return PLATFORM UPI deep link
  * Body: { houseId }
  */
 router.post("/initiate", auth, roleMiddleware("tenant"), async (req, res) => {
@@ -140,7 +128,6 @@ router.post("/initiate", auth, roleMiddleware("tenant"), async (req, res) => {
     const house = await House.findById(houseId);
     if (!house) return res.status(404).json({ message: "House not found" });
 
-    // ✅ House availability checks (if you added these fields in House model)
     if (house.status === "rented" || house.currentTenantId) {
       return res.status(400).json({ message: "This house is already rented." });
     }
@@ -148,12 +135,18 @@ router.post("/initiate", auth, roleMiddleware("tenant"), async (req, res) => {
     const amount = Number(house.bookingAmount || 0);
     if (!amount || amount <= 0) return res.status(400).json({ message: "Booking amount not set" });
 
-    const landlord = await User.findById(house.landlordId).select("name email phone upiId role");
+    const landlord = await User.findById(house.landlordId).select("name email phone role");
     if (!landlord) return res.status(404).json({ message: "Landlord not found" });
     if (landlord.role !== "landlord") return res.status(400).json({ message: "Invalid landlord" });
 
-    if (!landlord.upiId) {
-      return res.status(400).json({ message: "Landlord has not set UPI ID yet" });
+    // ✅ NEW: platform UPI (tenant pays to you)
+    const platformUpi = String(process.env.PLATFORM_UPI_ID || "").trim();
+    const platformName = String(process.env.PLATFORM_UPI_NAME || "HomeRent").trim();
+
+    console.log("PLATFORM_UPI_ID =", process.env.PLATFORM_UPI_ID);
+
+    if (!platformUpi) {
+      return res.status(500).json({ message: "Platform UPI is not configured" });
     }
 
     // ✅ RULE: 1 tenant can book only 1 house from a landlord at a time
@@ -185,7 +178,6 @@ router.post("/initiate", auth, roleMiddleware("tenant"), async (req, res) => {
       });
     }
 
-    // Create booking
     const booking = await Booking.create({
       houseId: house._id,
       landlordId: landlord._id,
@@ -194,9 +186,9 @@ router.post("/initiate", auth, roleMiddleware("tenant"), async (req, res) => {
       status: "initiated",
     });
 
-    // Create UPI deep link (unique per booking)
-    const pa = encodeURIComponent(landlord.upiId);
-    const pn = encodeURIComponent(landlord.name || "Landlord");
+    // ✅ Create platform UPI deep link
+    const pa = encodeURIComponent(platformUpi);
+    const pn = encodeURIComponent(platformName);
     const am = encodeURIComponent(String(amount));
     const tn = encodeURIComponent(`HomeRent Booking | ${booking._id}`);
 
@@ -209,8 +201,14 @@ router.post("/initiate", auth, roleMiddleware("tenant"), async (req, res) => {
       currency: "INR",
       upiLink,
       payee: {
+        name: platformName,
+        upiId: platformUpi,
+      },
+      landlord: {
+        id: String(landlord._id),
         name: landlord.name,
-        upiId: landlord.upiId,
+        phone: landlord.phone,
+        email: landlord.email,
       },
     });
   } catch (err) {
@@ -221,8 +219,10 @@ router.post("/initiate", auth, roleMiddleware("tenant"), async (req, res) => {
 
 /**
  * POST /api/bookings/:id/mark-paid
- * Tenant confirms they paid (manual flow)
- * Body: { utr?: string }
+ * Tenant submits manual payment proof (UTR + optional screenshot)
+ * Body: { utr: string (required), proofUrl?: string }
+ *
+ * ✅ Sets status -> payment_submitted
  */
 router.post("/:id/mark-paid", auth, roleMiddleware("tenant"), async (req, res) => {
   try {
@@ -237,9 +237,14 @@ router.post("/:id/mark-paid", auth, roleMiddleware("tenant"), async (req, res) =
       return res.status(400).json({ message: "Already transferred" });
     }
 
+    const utr = String(req.body?.utr || "").trim();
+    const proofUrl = String(req.body?.proofUrl || "").trim();
+
+    if (!utr) return res.status(400).json({ message: "UTR is required" });
+
     const allowed = ["initiated", "qr_created", "created"];
     if (!allowed.includes(String(booking.status))) {
-      return res.status(400).json({ message: `Cannot mark paid from status: ${booking.status}` });
+      return res.status(400).json({ message: `Cannot submit payment from status: ${booking.status}` });
     }
 
     const house = await House.findById(booking.houseId).select("status currentTenantId");
@@ -247,15 +252,24 @@ router.post("/:id/mark-paid", auth, roleMiddleware("tenant"), async (req, res) =
       return res.status(400).json({ message: "This house is already rented." });
     }
 
-    booking.status = "paid";
-    booking.paidAt = new Date();
-    if (req.body?.utr) booking.tenantUtr = String(req.body.utr).trim();
+    booking.status = "payment_submitted";
+    booking.tenantUtr = utr;
+    booking.paymentProofUrl = proofUrl;
+    booking.paymentSubmittedAt = new Date();
+
+    booking.statusHistory = booking.statusHistory || [];
+    booking.statusHistory.push({
+      status: "payment_submitted",
+      at: new Date(),
+      by: req.user._id,
+      note: `Payment proof submitted. UTR: ${utr}`,
+    });
 
     await booking.save();
 
     return res.json({
       success: true,
-      message: "Marked as paid",
+      message: "Payment proof submitted",
       bookingId: String(booking._id),
       status: booking.status,
     });
@@ -287,29 +301,5 @@ router.get("/:id/status", auth, async (req, res) => {
     return res.status(500).json({ message: "Server error" });
   }
 });
-
-// ✅ Tenant My Rents: only approved/transferred bookings
-router.get("/my-rents", auth, roleMiddleware("tenant"), async (req, res) => {
-  try {
-    const bookings = await Booking.find({
-      tenantId: req.user._id,
-      status: { $in: ["approved", "transferred"] },
-    })
-      .sort({ createdAt: -1 })
-      .populate(
-        "houseId",
-        "title location rent bookingAmount images type furnished beds baths area status currentTenantId rentedAt"
-      )
-      .populate("landlordId", "name email phone");
-
-    const houses = bookings.map((b) => b.houseId).filter(Boolean);
-
-    return res.json({ success: true, bookings, houses });
-  } catch (err) {
-    console.error("my-rents error:", err);
-    return res.status(500).json({ message: "Server error" });
-  }
-});
-
 
 module.exports = router;

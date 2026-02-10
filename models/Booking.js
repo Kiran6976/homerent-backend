@@ -4,7 +4,8 @@ const mongoose = require("mongoose");
 const ALLOWED_STATUSES = [
   "initiated",
   "qr_created",
-  "paid",
+  "payment_submitted", // ✅ NEW (tenant submitted proof)
+  "paid",              // (kept for backward compatibility; not used in manual flow)
   "approved",
   "rejected",
   "transferred",
@@ -36,10 +37,10 @@ const bookingSchema = new mongoose.Schema(
       required: true,
       min: 0,
     },
-    // add inside bookingSchema fields
-cancelledAt: { type: Date, default: null },
-cancelNote: { type: String, default: "" },
 
+    // ✅ Cancellation info
+    cancelledAt: { type: Date, default: null },
+    cancelNote: { type: String, default: "" },
 
     // ✅ Allowed statuses
     status: {
@@ -49,7 +50,13 @@ cancelNote: { type: String, default: "" },
       index: true,
     },
 
-    // Razorpay QR booking
+    // ✅ Manual payment proof (tenant → platform)
+    paidAt: { type: Date, default: null }, // optional legacy
+    tenantUtr: { type: String, default: "" },
+    paymentProofUrl: { type: String, default: "" }, // screenshot url
+    paymentSubmittedAt: { type: Date, default: null },
+
+    // Razorpay QR booking (legacy / optional)
     razorpayQrId: { type: String, default: null },
     qrImageUrl: { type: String, default: null },
     qrShortUrl: { type: String, default: null },
@@ -59,7 +66,7 @@ cancelNote: { type: String, default: "" },
     razorpayTransferId: { type: String, default: null },
 
     // ✅ Admin payout tracking (your Admin UI uses UTR)
-    payoutTxnId: { type: String, default: null }, // UTR
+    payoutTxnId: { type: String, default: null }, // UTR to landlord
     payoutAt: { type: Date, default: null },
 
     // ✅ Admin decision info (for history screen)
@@ -88,23 +95,14 @@ cancelNote: { type: String, default: "" },
  * ✅ IMPORTANT NORMALIZER
  * Some old code is setting status = "created"
  * Convert it to "initiated" BEFORE mongoose enum validation runs.
- *
- * NOTE: No "next()" here → avoids "next is not a function" on newer mongoose.
  */
 bookingSchema.pre("validate", function () {
-  if (this.status === "created") {
-    this.status = "initiated";
-  }
-
-  // safety: if somehow status is empty
-  if (!this.status) {
-    this.status = "initiated";
-  }
+  if (this.status === "created") this.status = "initiated";
+  if (!this.status) this.status = "initiated";
 });
 
 /**
  * ✅ Auto-add history on creation or status change
- * NOTE: No "next()" here.
  */
 bookingSchema.pre("save", function () {
   this.statusHistory = this.statusHistory || [];
@@ -125,7 +123,7 @@ bookingSchema.pre("save", function () {
     this.statusHistory.push({
       status: this.status,
       at: new Date(),
-      by: null, // keep null; routes can push explicit entries with admin id
+      by: null,
       note: `Status changed to ${this.status}`,
     });
   }

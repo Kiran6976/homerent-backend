@@ -9,7 +9,6 @@ const router = express.Router();
 
 /**
  * Helper: mark house as rented for a booking (idempotent)
- * - Sets: status=rented, currentTenantId, currentBookingId, rentedAt
  */
 async function assignHouseToTenant(booking) {
   if (!booking?.houseId) return;
@@ -17,7 +16,7 @@ async function assignHouseToTenant(booking) {
   const house = await House.findById(booking.houseId);
   if (!house) return;
 
-  // If already rented, don't overwrite tenant/booking (safety)
+  // If already rented, don't overwrite (safety)
   if (house.status === "rented" || house.currentTenantId) return;
 
   house.status = "rented";
@@ -42,7 +41,7 @@ function pushHistory(booking, status, by, note = "") {
 }
 
 /**
- * GET /api/admin/bookings?status=pending|approved|rejected|all|paid|qr_created|approved|transferred
+ * GET /api/admin/bookings?status=pending|approved|rejected|all|payment_submitted|approved|transferred
  */
 router.get("/bookings", authMiddleware, requireAdmin, async (req, res) => {
   try {
@@ -50,7 +49,8 @@ router.get("/bookings", authMiddleware, requireAdmin, async (req, res) => {
     let query = {};
 
     if (status === "pending") {
-      query.status = { $in: ["paid", "qr_created"] };
+      // ✅ manual proof pending verification
+      query.status = { $in: ["payment_submitted"] };
     } else if (status === "approved") {
       query.status = { $in: ["approved", "transferred"] };
     } else if (status === "rejected") {
@@ -76,7 +76,7 @@ router.get("/bookings", authMiddleware, requireAdmin, async (req, res) => {
 
 /**
  * PUT /api/admin/bookings/:id/approve
- * - Only PAID can be approved
+ * - Only PAYMENT_SUBMITTED can be approved
  * - After approve: mark house rented + assign tenant
  */
 router.put("/bookings/:id/approve", authMiddleware, requireAdmin, async (req, res) => {
@@ -86,9 +86,9 @@ router.put("/bookings/:id/approve", authMiddleware, requireAdmin, async (req, re
 
     if (!booking) return res.status(404).json({ message: "Booking not found" });
 
-    if (booking.status !== "paid") {
+    if (booking.status !== "payment_submitted") {
       return res.status(400).json({
-        message: `Only PAID bookings can be approved. Current status: ${booking.status}`,
+        message: `Only payment_submitted bookings can be approved. Current status: ${booking.status}`,
       });
     }
 
@@ -100,12 +100,11 @@ router.put("/bookings/:id/approve", authMiddleware, requireAdmin, async (req, re
       note: String(note || "").trim(),
     };
 
-    // ✅ Explicit history entry with admin id (more accurate than schema auto-note)
     pushHistory(booking, "approved", req.user._id, String(note || "Approved by admin"));
 
     await booking.save();
 
-    // ✅ Assign house to tenant (auto-hide from global listing)
+    // ✅ Assign house to tenant
     await assignHouseToTenant(booking);
 
     const populated = await Booking.findById(booking._id)
@@ -122,7 +121,7 @@ router.put("/bookings/:id/approve", authMiddleware, requireAdmin, async (req, re
 
 /**
  * PUT /api/admin/bookings/:id/reject
- * - Only PAID can be rejected
+ * - Only PAYMENT_SUBMITTED can be rejected
  */
 router.put("/bookings/:id/reject", authMiddleware, requireAdmin, async (req, res) => {
   try {
@@ -131,9 +130,9 @@ router.put("/bookings/:id/reject", authMiddleware, requireAdmin, async (req, res
 
     if (!booking) return res.status(404).json({ message: "Booking not found" });
 
-    if (booking.status !== "paid") {
+    if (booking.status !== "payment_submitted") {
       return res.status(400).json({
-        message: `Only PAID bookings can be rejected. Current status: ${booking.status}`,
+        message: `Only payment_submitted bookings can be rejected. Current status: ${booking.status}`,
       });
     }
 
@@ -161,9 +160,8 @@ router.put("/bookings/:id/reject", authMiddleware, requireAdmin, async (req, res
 });
 
 /**
- * POST /api/admin/bookings/:id/upi-intent
- * (optional helper) returns UPI intent for landlord payout
- * If you don't need it, remove this.
+ * GET /api/admin/bookings/:id/upi-intent
+ * returns UPI intent for landlord payout (admin paying landlord)
  */
 router.get("/bookings/:id/upi-intent", authMiddleware, requireAdmin, async (req, res) => {
   try {
