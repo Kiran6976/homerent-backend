@@ -1,4 +1,4 @@
-// User.js (FULL UPDATED FILE)
+// models/User.js (FULL UPDATED FILE)
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 
@@ -51,7 +51,7 @@ const userSchema = new mongoose.Schema(
       trim: true,
     },
 
-    // ✅ Landlord payout info (manual UPI payout initiated from Admin panel)
+    // ✅ Landlord payout info
     upiId: {
       type: String,
       trim: true,
@@ -63,17 +63,16 @@ const userSchema = new mongoose.Schema(
     otpExpiresAt: { type: Date, default: null },
     otpAttempts: { type: Number, default: 0 },
 
-    // ✅ Password reset fields
-    passwordResetTokenHash: { type: String, default: null },
-    passwordResetExpiresAt: { type: Date, default: null },
-
+    // ✅ Password reset via OTP fields
+    passwordResetOtpHash: { type: String, default: null },
+    passwordResetOtpExpiresAt: { type: Date, default: null },
+    passwordResetOtpAttempts: { type: Number, default: 0 },
   },
   { timestamps: true }
 );
 
 // ✅ Hash password before saving
 userSchema.pre("save", async function () {
-  // only hash if password changed
   if (!this.isModified("passwordHash")) return;
 
   const salt = await bcrypt.genSalt(10);
