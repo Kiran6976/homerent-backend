@@ -1,67 +1,24 @@
 // utils/sendEmail.js
-const nodemailer = require("nodemailer");
+const sgMail = require("@sendgrid/mail");
 
-/* =========================
-   ENV CONFIG
-========================= */
-const host = process.env.SMTP_HOST || "smtp.hostinger.com";
-const port = Number(process.env.SMTP_PORT || 587); // 587 recommended
-const secure =
-  String(process.env.SMTP_SECURE || "false").toLowerCase() === "true";
-
-const user = process.env.SMTP_USER;
-const pass = process.env.SMTP_PASS;
-
-if (!user || !pass) {
-  console.error("❌ SMTP_USER or SMTP_PASS missing in .env");
+if (!process.env.SENDGRID_API_KEY) {
+  console.error("❌ SENDGRID_API_KEY missing");
 }
 
-/* =========================
-   TRANSPORTER
-========================= */
-const transporter = nodemailer.createTransport({
-  host,
-  port,
-  secure, // false for 587, true for 465
-  auth: {
-    user,
-    pass,
-  },
-  tls: {
-    rejectUnauthorized: false, // helps avoid SSL issues
-  },
-});
+sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+
+console.log("✅ SendGrid Web API initialized");
 
 /* =========================
-   VERIFY CONNECTION (IMPORTANT)
+   SAFE SEND (never breaks API)
 ========================= */
-transporter.verify((error, success) => {
-  if (error) {
-    console.error("❌ SMTP VERIFY FAILED:", error.message);
-  } else {
-    console.log("✅ SMTP VERIFY SUCCESS — Server is ready to send emails");
-  }
-});
-
-/* =========================
-   SAFE SEND
-========================= */
-async function safeSend({ to, subject, html }, label) {
+async function safeSend(msg, label) {
   try {
-    const fromEmail = process.env.FROM_EMAIL || user;
-    const fromName = process.env.FROM_NAME || "ApnaHome";
-
-    const info = await transporter.sendMail({
-      from: `"${fromName}" <${fromEmail}>`,
-      to,
-      subject,
-      html,
-    });
-
-    console.log(`✅ ${label} sent: ${info.messageId}`);
+    await sgMail.send(msg);
+    console.log(`✅ ${label} sent`);
     return true;
   } catch (err) {
-    console.error(`❌ ${label} failed:`, err.message);
+    console.error(`❌ ${label} failed`, err?.response?.body || err.message);
     return false;
   }
 }
@@ -73,7 +30,11 @@ async function sendOtpEmail(to, otp) {
   return safeSend(
     {
       to,
-      subject: "Your ApnaHome OTP Code",
+      from: {
+        email: process.env.FROM_EMAIL, // must be verified in SendGrid
+        name: "HomeRent",
+      },
+      subject: "Your HomeRent OTP Code",
       html: `
         <div style="font-family: Arial; line-height: 1.6">
           <h2>Email Verification</h2>
@@ -94,7 +55,11 @@ async function sendResetPasswordOtpEmail(to, otp) {
   return safeSend(
     {
       to,
-      subject: "ApnaHome Password Reset OTP",
+      from: {
+        email: process.env.FROM_EMAIL,
+        name: "HomeRent",
+      },
+      subject: "HomeRent Password Reset OTP",
       html: `
         <div style="font-family: Arial; line-height: 1.6">
           <h2>Password Reset</h2>
