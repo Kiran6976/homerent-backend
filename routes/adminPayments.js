@@ -49,9 +49,9 @@ router.get("/bookings", authMiddleware, requireAdmin, async (req, res) => {
     let query = {};
 
     if (status === "pending") {
-      // ✅ manual proof pending verification
       query.status = { $in: ["payment_submitted"] };
     } else if (status === "approved") {
+      // ✅ approved tab should show both approved + transferred
       query.status = { $in: ["approved", "transferred"] };
     } else if (status === "rejected") {
       query.status = "rejected";
@@ -76,8 +76,6 @@ router.get("/bookings", authMiddleware, requireAdmin, async (req, res) => {
 
 /**
  * PUT /api/admin/bookings/:id/approve
- * - Only PAYMENT_SUBMITTED can be approved
- * - After approve: mark house rented + assign tenant
  */
 router.put("/bookings/:id/approve", authMiddleware, requireAdmin, async (req, res) => {
   try {
@@ -92,7 +90,6 @@ router.put("/bookings/:id/approve", authMiddleware, requireAdmin, async (req, re
       });
     }
 
-    // ✅ Approve booking
     booking.status = "approved";
     booking.adminDecision = {
       approvedBy: req.user._id,
@@ -104,7 +101,6 @@ router.put("/bookings/:id/approve", authMiddleware, requireAdmin, async (req, re
 
     await booking.save();
 
-    // ✅ Assign house to tenant
     await assignHouseToTenant(booking);
 
     const populated = await Booking.findById(booking._id)
@@ -121,7 +117,6 @@ router.put("/bookings/:id/approve", authMiddleware, requireAdmin, async (req, re
 
 /**
  * PUT /api/admin/bookings/:id/reject
- * - Only PAYMENT_SUBMITTED can be rejected
  */
 router.put("/bookings/:id/reject", authMiddleware, requireAdmin, async (req, res) => {
   try {
@@ -160,25 +155,45 @@ router.put("/bookings/:id/reject", authMiddleware, requireAdmin, async (req, res
 });
 
 /**
- * GET /api/admin/bookings/:id/upi-intent
+ * ✅ GET /api/admin/bookings/:id/upi-intent
  * returns UPI intent for landlord payout (admin paying landlord)
  */
 router.get("/bookings/:id/upi-intent", authMiddleware, requireAdmin, async (req, res) => {
   try {
-    const booking = await Booking.findById(req.params.id).populate("landlordId", "name upiId");
+    const booking = await Booking.findById(req.params.id)
+      .populate("landlordId", "name upiId")
+      .populate("houseId", "title");
+
     if (!booking) return res.status(404).json({ message: "Booking not found" });
 
-    const upiId = booking?.landlordId?.upiId;
+    // ✅ IMPORTANT: allow payout intent only after approve
+    if (booking.status !== "approved") {
+      return res.status(400).json({
+        message: `UPI payout is allowed only for APPROVED bookings. Current status: ${booking.status}`,
+      });
+    }
+
+    const upiId = String(booking?.landlordId?.upiId || "").trim();
     if (!upiId) return res.status(400).json({ message: "Landlord has not set UPI ID" });
 
+    const amount = Number(booking.amount || 0);
+    if (!amount || amount <= 0) return res.status(400).json({ message: "Invalid booking amount" });
+
     const pa = encodeURIComponent(upiId);
-    const pn = encodeURIComponent(booking.landlordId.name || "Landlord");
-    const am = encodeURIComponent(String(booking.amount));
+    const pn = encodeURIComponent(booking.landlordId?.name || "Landlord");
+    const am = encodeURIComponent(String(amount));
     const tn = encodeURIComponent(`HomeRent Payout | ${booking._id}`);
 
     const intent = `upi://pay?pa=${pa}&pn=${pn}&am=${am}&cu=INR&tn=${tn}`;
 
-    return res.json({ success: true, intent });
+    return res.json({
+      success: true,
+      intent,
+      bookingId: String(booking._id),
+      amount,
+      payee: { name: booking.landlordId?.name || "Landlord", upiId },
+      note: `Pay landlord for ${booking?.houseId?.title || "booking"}`,
+    });
   } catch (err) {
     console.error("upi-intent error:", err);
     return res.status(500).json({ message: "Server error" });
@@ -187,8 +202,6 @@ router.get("/bookings/:id/upi-intent", authMiddleware, requireAdmin, async (req,
 
 /**
  * POST /api/admin/bookings/:id/mark-transferred
- * Admin marks payout to landlord as transferred (manual UPI payout)
- * body: { payoutTxnId }
  */
 router.post("/bookings/:id/mark-transferred", authMiddleware, requireAdmin, async (req, res) => {
   try {
@@ -212,7 +225,6 @@ router.post("/bookings/:id/mark-transferred", authMiddleware, requireAdmin, asyn
 
     await booking.save();
 
-    // safety: in case approve didn't assign (should already be done)
     await assignHouseToTenant(booking);
 
     const populated = await Booking.findById(booking._id)
