@@ -139,7 +139,7 @@ router.post("/initiate", auth, roleMiddleware("tenant"), async (req, res) => {
     if (!landlord) return res.status(404).json({ message: "Landlord not found" });
     if (landlord.role !== "landlord") return res.status(400).json({ message: "Invalid landlord" });
 
-    // ✅ NEW: platform UPI (tenant pays to you)
+    // ✅ platform UPI (tenant pays to you)
     const platformUpi = String(process.env.PLATFORM_UPI_ID || "").trim();
     const platformName = String(process.env.PLATFORM_UPI_NAME || "HomeRent").trim();
 
@@ -161,6 +161,7 @@ router.post("/initiate", auth, roleMiddleware("tenant"), async (req, res) => {
         message: "You already have an active booking with this landlord. One house per landlord allowed.",
         bookingId: String(existingWithLandlord._id),
         status: existingWithLandlord.status,
+        canCancel: true, // ✅ it's their own booking
       });
     }
 
@@ -168,13 +169,26 @@ router.post("/initiate", auth, roleMiddleware("tenant"), async (req, res) => {
     const existingForHouse = await Booking.findOne({
       houseId: house._id,
       status: { $in: ACTIVE_STATUSES },
-    });
+    }).select("_id tenantId status");
 
     if (existingForHouse) {
-      return res.status(400).json({
-        message: "This house already has an active booking.",
-        bookingId: String(existingForHouse._id),
+      const isMine = String(existingForHouse.tenantId) === String(req.user._id);
+
+      // ✅ If it's same tenant's booking, allow cancel UI
+      if (isMine) {
+        return res.status(400).json({
+          message: "You already have an active booking for this house.",
+          bookingId: String(existingForHouse._id),
+          status: existingForHouse.status,
+          canCancel: true,
+        });
+      }
+
+      // ✅ If it's another tenant's booking, DO NOT leak bookingId
+      return res.status(409).json({
+        message: "This house already has an active booking by another tenant.",
         status: existingForHouse.status,
+        canCancel: false,
       });
     }
 
