@@ -54,6 +54,8 @@ app.use("/api/users", require("./routes/users"));
  */
 app.use("/api/admin", require("./routes/admin"));
 app.use("/api/admin", require("./routes/adminPayments")); // ✅ NEW
+app.use("/api/support", require("./routes/support"));
+app.use("/api/admin/support", require("./routes/adminSupport"));
 
 // ✅ Booking + payment routes
 app.use("/api/bookings", require("./routes/bookings"));
@@ -61,6 +63,7 @@ app.use("/api/payments", require("./routes/payments"));
 app.use("/api/visits", visitsRoutes);
 app.use("/api/rent-payments", require("./routes/rentPayments"));
 app.use("/api/landlord", require("./routes/landlordPayments"));
+app.use("/api/uploads", require("./routes/supportUploads"));
 
 
 // ❌ Remove Razorpay Route routes (no longer used)
