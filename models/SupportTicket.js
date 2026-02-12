@@ -44,5 +44,6 @@ const SupportTicketSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+SupportTicketSchema.index({ userId: 1, status: 1, lastMessageAt: -1 });
 
 module.exports = mongoose.model("SupportTicket", SupportTicketSchema);
