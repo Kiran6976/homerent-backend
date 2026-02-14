@@ -1,10 +1,45 @@
 const express = require("express");
+const crypto = require("crypto");
 const User = require("../models/User");
 const House = require("../models/House");
 const authMiddleware = require("../middleware/auth");
 const { roleMiddleware } = require("../middleware/role");
 
 const router = express.Router();
+
+/**
+ * ✅ Aadhaar Encryption helpers (AES-256-GCM)
+ * Env: AADHAAR_ENC_KEY (hex 64 chars OR base64 32 bytes)
+ */
+const getEncKey = () => {
+  const raw = process.env.AADHAAR_ENC_KEY;
+  if (!raw) throw new Error("AADHAAR_ENC_KEY missing in env");
+
+  // try hex
+  if (/^[0-9a-fA-F]{64}$/.test(raw)) return Buffer.from(raw, "hex");
+
+  // try base64
+  const b = Buffer.from(raw, "base64");
+  if (b.length === 32) return b;
+
+  throw new Error("AADHAAR_ENC_KEY must be 32 bytes (hex64 or base64)");
+};
+
+const decryptAadhaar = (blob) => {
+  const key = getEncKey();
+  const [ivB64, tagB64, dataB64] = String(blob || "").split(":");
+  if (!ivB64 || !tagB64 || !dataB64) return null;
+
+  const iv = Buffer.from(ivB64, "base64");
+  const tag = Buffer.from(tagB64, "base64");
+  const data = Buffer.from(dataB64, "base64");
+
+  const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
+  decipher.setAuthTag(tag);
+
+  const dec = Buffer.concat([decipher.update(data), decipher.final()]);
+  return dec.toString("utf8");
+};
 
 /**
  * GET /api/admin/users?role=landlord|tenant
@@ -25,6 +60,39 @@ router.get("/users", authMiddleware, roleMiddleware("admin"), async (req, res) =
   } catch (err) {
     console.error("Admin get users error:", err);
     res.status(500).json({ message: "Server error" });
+  }
+});
+
+/**
+ * ✅ NEW
+ * GET /api/admin/users/:id/aadhaar
+ * Admin: fetch full Aadhaar number (decrypt) for Eye button
+ */
+router.get("/users/:id/aadhaar", authMiddleware, roleMiddleware("admin"), async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // aadhaarEnc is select:false in schema, so must explicitly include it with +
+    const user = await User.findById(id).select("role aadhaarLast4 +aadhaarEnc");
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    if (user.role !== "landlord") {
+      return res.status(400).json({ message: "Aadhaar only exists for landlords" });
+    }
+
+    if (!user.aadhaarEnc) {
+      return res.status(404).json({ message: "Aadhaar not available" });
+    }
+
+    const aadhaarNumber = decryptAadhaar(user.aadhaarEnc);
+    if (!aadhaarNumber) {
+      return res.status(500).json({ message: "Failed to decrypt Aadhaar" });
+    }
+
+    return res.json({ success: true, aadhaarNumber });
+  } catch (err) {
+    console.error("Admin Aadhaar fetch error:", err);
+    return res.status(500).json({ message: err.message || "Server error" });
   }
 });
 

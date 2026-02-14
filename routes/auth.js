@@ -1,7 +1,8 @@
-// routes/auth.js (FULL UPDATED FILE - includes upiId in responses + RESET OTP FLOW)
+// routes/auth.js (FULL UPDATED FILE - Aadhaar stored ENCRYPTED for admin viewing + FIX select:false OTP issue)
 const express = require("express");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
+const crypto = require("crypto");
 const User = require("../models/User");
 const authMiddleware = require("../middleware/auth");
 const { sendOtpEmail, sendResetPasswordOtpEmail } = require("../utils/sendEmail");
@@ -13,7 +14,55 @@ const createToken = (userId, role) =>
 
 const generateOtp = () => String(Math.floor(100000 + Math.random() * 900000)); // 6 digit
 
-// ✅ IMPORTANT: always send upiId back to frontend
+// ✅ Aadhaar helpers (basic validation: 12 digits)
+const cleanAadhaar = (v) => String(v || "").replace(/\D/g, "").slice(0, 12);
+const isValidAadhaarFormat = (v) => /^\d{12}$/.test(v);
+
+// ✅ Encryption helpers (AES-256-GCM)
+// Env: AADHAAR_ENC_KEY (hex 64 chars OR base64 32 bytes)
+const getEncKey = () => {
+  const raw = process.env.AADHAAR_ENC_KEY;
+  if (!raw) throw new Error("AADHAAR_ENC_KEY missing in env");
+
+  // try hex
+  if (/^[0-9a-fA-F]{64}$/.test(raw)) return Buffer.from(raw, "hex");
+
+  // try base64
+  const b = Buffer.from(raw, "base64");
+  if (b.length === 32) return b;
+
+  throw new Error("AADHAAR_ENC_KEY must be 32 bytes (hex64 or base64)");
+};
+
+const encryptAadhaar = (plain) => {
+  const key = getEncKey();
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  const enc = Buffer.concat([cipher.update(String(plain), "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+
+  // store as: iv:tag:data (base64)
+  return `${iv.toString("base64")}:${tag.toString("base64")}:${enc.toString("base64")}`;
+};
+
+// (Optional) use this later in admin routes to view full number
+const decryptAadhaar = (blob) => {
+  const key = getEncKey();
+  const [ivB64, tagB64, dataB64] = String(blob || "").split(":");
+  if (!ivB64 || !tagB64 || !dataB64) return null;
+
+  const iv = Buffer.from(ivB64, "base64");
+  const tag = Buffer.from(tagB64, "base64");
+  const data = Buffer.from(dataB64, "base64");
+
+  const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
+  decipher.setAuthTag(tag);
+
+  const dec = Buffer.concat([decipher.update(data), decipher.final()]);
+  return dec.toString("utf8");
+};
+
+// ✅ IMPORTANT: send only safe fields to frontend
 const userResponse = (user) => ({
   id: user._id,
   name: user.name,
@@ -27,6 +76,10 @@ const userResponse = (user) => ({
   // ✅ UPI (Landlord)
   upiId: user.upiId || null,
 
+  // ✅ Aadhaar (safe fields only)
+  aadhaarLast4: user.aadhaarLast4 || null,
+  aadhaarVerified: !!user.aadhaarVerified,
+
   // (keep if you still use these)
   razorpayAccountId: user.razorpayAccountId,
   razorpayAccountStatus: user.razorpayAccountStatus,
@@ -34,18 +87,17 @@ const userResponse = (user) => ({
 });
 
 // ✅ REGISTER (creates user + sends OTP)
+// accepts optional: aadhaarNumber (ONLY for landlord)
 router.post("/register", async (req, res) => {
   try {
-    const { name, age, address, email, password, role, phone } = req.body;
+    const { name, age, address, email, password, role, phone, aadhaarNumber } = req.body;
 
     if (!name || !email || !password || !role || age === undefined || !address) {
       return res.status(400).json({ message: "Please fill in all required fields" });
     }
 
     const ageNum = Number(age);
-    if (Number.isNaN(ageNum)) {
-      return res.status(400).json({ message: "Age must be a valid number" });
-    }
+    if (Number.isNaN(ageNum)) return res.status(400).json({ message: "Age must be a valid number" });
     if (ageNum < 18) return res.status(400).json({ message: "You must be at least 18 years old" });
 
     if (String(password).length < 6) {
@@ -53,6 +105,21 @@ router.post("/register", async (req, res) => {
     }
 
     const lowerEmail = String(email).toLowerCase().trim();
+
+    // ✅ Aadhaar: only required for landlord
+    let aadhaarCleaned = null;
+    let aadhaarLast4 = null;
+    let aadhaarEnc = null;
+
+    if (String(role) === "landlord") {
+      aadhaarCleaned = cleanAadhaar(aadhaarNumber);
+      if (!isValidAadhaarFormat(aadhaarCleaned)) {
+        return res.status(400).json({ message: "Please enter a valid 12-digit Aadhaar number" });
+      }
+      aadhaarLast4 = aadhaarCleaned.slice(-4);
+      aadhaarEnc = encryptAadhaar(aadhaarCleaned);
+    }
+
     const existingUser = await User.findOne({ email: lowerEmail });
 
     // If user exists
@@ -68,12 +135,26 @@ router.post("/register", async (req, res) => {
       existingUser.otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
       existingUser.otpAttempts = 0;
 
-      // Optional: update details if user tried again
+      // update details
       existingUser.name = String(name).trim();
       existingUser.age = ageNum;
       existingUser.address = String(address).trim();
       existingUser.role = role;
       if (phone !== undefined) existingUser.phone = phone;
+
+      // ✅ update Aadhaar safely if landlord
+      if (String(role) === "landlord") {
+        existingUser.aadhaarLast4 = aadhaarLast4;
+        existingUser.aadhaarEnc = aadhaarEnc;
+        existingUser.aadhaarVerified = false;
+        existingUser.aadhaarVerificationNote = "";
+      } else {
+        // if switching away from landlord during re-register, clear
+        existingUser.aadhaarLast4 = null;
+        existingUser.aadhaarEnc = null;
+        existingUser.aadhaarVerified = false;
+        existingUser.aadhaarVerificationNote = "";
+      }
 
       // ✅ IMPORTANT: don't bcrypt.hash here (pre-save already hashes)
       existingUser.passwordHash = String(password);
@@ -103,6 +184,12 @@ router.post("/register", async (req, res) => {
       otpExpiresAt: new Date(Date.now() + 10 * 60 * 1000),
       otpAttempts: 0,
       upiId: null,
+
+      // ✅ Aadhaar (only for landlords)
+      aadhaarLast4: String(role) === "landlord" ? aadhaarLast4 : null,
+      aadhaarEnc: String(role) === "landlord" ? aadhaarEnc : null,
+      aadhaarVerified: false,
+      aadhaarVerificationNote: "",
     });
 
     await user.save();
@@ -122,12 +209,10 @@ router.post("/register", async (req, res) => {
 router.post("/verify-email", async (req, res) => {
   try {
     const { email, otp } = req.body;
+    if (!email || !otp) return res.status(400).json({ message: "Email and OTP are required" });
 
-    if (!email || !otp) {
-      return res.status(400).json({ message: "Email and OTP are required" });
-    }
-
-    const user = await User.findOne({ email: String(email).toLowerCase().trim() });
+    // ✅ FIX: otpCodeHash is select:false in schema, so explicitly include it
+    const user = await User.findOne({ email: String(email).toLowerCase().trim() }).select("+otpCodeHash");
     if (!user) return res.status(400).json({ message: "User not found" });
 
     if (user.isVerified) {
@@ -207,10 +292,7 @@ router.post("/resend-otp", async (req, res) => {
 router.post("/login", async (req, res) => {
   try {
     const { email, password } = req.body;
-
-    if (!email || !password) {
-      return res.status(400).json({ message: "Please provide email and password" });
-    }
+    if (!email || !password) return res.status(400).json({ message: "Please provide email and password" });
 
     const user = await User.findOne({ email: String(email).toLowerCase().trim() });
     if (!user) return res.status(400).json({ message: "Invalid credentials" });
@@ -220,9 +302,7 @@ router.post("/login", async (req, res) => {
     }
 
     if (!user.passwordHash) {
-      return res.status(400).json({
-        message: "Password not set for this account. Please register again.",
-      });
+      return res.status(400).json({ message: "Password not set for this account. Please register again." });
     }
 
     const isMatch = await user.comparePassword(password);
@@ -251,7 +331,6 @@ router.post("/forgot-password-otp", async (req, res) => {
     const user = await User.findOne({ email: lowerEmail });
 
     const genericMsg = "If an account exists with this email, an OTP has been sent.";
-
     if (!user) return res.json({ success: true, message: genericMsg });
 
     const otp = generateOtp();
@@ -261,7 +340,6 @@ router.post("/forgot-password-otp", async (req, res) => {
     await user.save();
 
     await sendResetPasswordOtpEmail(user.email, otp);
-
     return res.json({ success: true, message: genericMsg });
   } catch (err) {
     console.error("Forgot password OTP error:", err);
@@ -283,8 +361,9 @@ router.post("/reset-password-otp", async (req, res) => {
     }
 
     const lowerEmail = String(email).toLowerCase().trim();
-    const user = await User.findOne({ email: lowerEmail });
 
+    // ✅ FIX: passwordResetOtpHash is select:false in schema, so explicitly include it
+    const user = await User.findOne({ email: lowerEmail }).select("+passwordResetOtpHash");
     if (!user) return res.status(400).json({ message: "Invalid OTP or expired" });
 
     if (!user.passwordResetOtpHash || !user.passwordResetOtpExpiresAt) {
@@ -307,13 +386,11 @@ router.post("/reset-password-otp", async (req, res) => {
     }
 
     user.passwordHash = String(password); // pre-save will hash
-
     user.passwordResetOtpHash = null;
     user.passwordResetOtpExpiresAt = null;
     user.passwordResetOtpAttempts = 0;
 
     await user.save();
-
     return res.json({ success: true, message: "Password updated successfully. Please login." });
   } catch (err) {
     console.error("Reset password OTP error:", err);

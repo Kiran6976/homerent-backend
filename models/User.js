@@ -1,4 +1,4 @@
-// models/User.js (FULL UPDATED FILE)
+// models/User.js (FULL UPDATED FILE - adds Aadhaar encrypted storage)
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 
@@ -58,13 +58,20 @@ const userSchema = new mongoose.Schema(
       default: null,
     },
 
+    // ✅ Aadhaar (ONLY for landlords)
+    // Store encrypted Aadhaar so Admin can view full number
+    aadhaarEnc: { type: String, default: null, select: false }, // encrypted blob
+    aadhaarLast4: { type: String, default: null, trim: true },
+    aadhaarVerified: { type: Boolean, default: false, index: true },
+    aadhaarVerificationNote: { type: String, default: "", trim: true },
+
     // ✅ OTP / verification fields
-    otpCodeHash: { type: String, default: null },
+    otpCodeHash: { type: String, default: null, select: false },
     otpExpiresAt: { type: Date, default: null },
     otpAttempts: { type: Number, default: 0 },
 
     // ✅ Password reset via OTP fields
-    passwordResetOtpHash: { type: String, default: null },
+    passwordResetOtpHash: { type: String, default: null, select: false },
     passwordResetOtpExpiresAt: { type: Date, default: null },
     passwordResetOtpAttempts: { type: Number, default: 0 },
   },
