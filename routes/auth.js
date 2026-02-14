@@ -1,4 +1,4 @@
-// routes/auth.js (FULL UPDATED FILE - Aadhaar stored ENCRYPTED for admin viewing + FIX select:false OTP issue)
+// routes/auth.js (FULL UPDATED FILE - adds resend reset OTP route)
 const express = require("express");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
@@ -264,7 +264,7 @@ router.post("/verify-email", async (req, res) => {
   }
 });
 
-// ✅ RESEND OTP
+// ✅ RESEND OTP (REGISTER EMAIL VERIFICATION)
 router.post("/resend-otp", async (req, res) => {
   try {
     const { email } = req.body;
@@ -321,7 +321,7 @@ router.post("/login", async (req, res) => {
   }
 });
 
-// ✅ FORGOT PASSWORD OTP
+// ✅ FORGOT PASSWORD OTP (send)
 router.post("/forgot-password-otp", async (req, res) => {
   try {
     const { email } = req.body;
@@ -343,6 +343,48 @@ router.post("/forgot-password-otp", async (req, res) => {
     return res.json({ success: true, message: genericMsg });
   } catch (err) {
     console.error("Forgot password OTP error:", err);
+    return res.status(500).json({ message: err.message || "Server error" });
+  }
+});
+
+// ✅ RESEND RESET PASSWORD OTP (NEW)
+router.post("/forgot-password-otp/resend", async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ message: "Email is required" });
+
+    const lowerEmail = String(email).toLowerCase().trim();
+    const user = await User.findOne({ email: lowerEmail });
+
+    const genericMsg = "If an account exists with this email, an OTP has been sent.";
+    if (!user) return res.json({ success: true, message: genericMsg });
+
+    // ✅ Optional cooldown: block very frequent resends (30s)
+    const now = Date.now();
+    const expiresAt = user.passwordResetOtpExpiresAt?.getTime() || 0;
+    const stillValid = expiresAt > now;
+
+    if (stillValid) {
+      const issuedAtApprox = expiresAt - 10 * 60 * 1000; // since you set 10 mins expiry
+      const secondsSinceIssued = Math.floor((now - issuedAtApprox) / 1000);
+      if (secondsSinceIssued < 30) {
+        return res.status(429).json({
+          success: false,
+          message: `Please wait ${30 - secondsSinceIssued}s before resending OTP.`,
+        });
+      }
+    }
+
+    const otp = generateOtp();
+    user.passwordResetOtpHash = await bcrypt.hash(otp, 10);
+    user.passwordResetOtpExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
+    user.passwordResetOtpAttempts = 0;
+    await user.save();
+
+    await sendResetPasswordOtpEmail(user.email, otp);
+    return res.json({ success: true, message: "OTP resent to your email." });
+  } catch (err) {
+    console.error("Resend reset OTP error:", err);
     return res.status(500).json({ message: err.message || "Server error" });
   }
 });
