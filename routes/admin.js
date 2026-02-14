@@ -1,5 +1,9 @@
+// routes/admin.js
 const express = require("express");
 const crypto = require("crypto");
+const https = require("https"); // ✅ NEW (for bill preview)
+const http = require("http");   // ✅ NEW (for bill preview)
+
 const User = require("../models/User");
 const House = require("../models/House");
 const authMiddleware = require("../middleware/auth");
@@ -52,9 +56,7 @@ router.get("/users", authMiddleware, roleMiddleware("admin"), async (req, res) =
     const query = {};
     if (role) query.role = role;
 
-    const users = await User.find(query)
-      .select("-passwordHash")
-      .sort({ createdAt: -1 });
+    const users = await User.find(query).select("-passwordHash").sort({ createdAt: -1 });
 
     res.json(users);
   } catch (err) {
@@ -101,49 +103,44 @@ router.get("/users/:id/aadhaar", authMiddleware, roleMiddleware("admin"), async 
  * Admin: verify/unverify landlord
  * body: { isVerified: true/false }
  */
-router.patch(
-  "/users/:id/verify",
-  authMiddleware,
-  roleMiddleware("admin"),
-  async (req, res) => {
-    try {
-      const { id } = req.params;
-      const { isVerified } = req.body;
+router.patch("/users/:id/verify", authMiddleware, roleMiddleware("admin"), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { isVerified } = req.body;
 
-      if (typeof isVerified !== "boolean") {
-        return res.status(400).json({ message: "isVerified must be boolean" });
-      }
-
-      const user = await User.findById(id);
-      if (!user) return res.status(404).json({ message: "User not found" });
-
-      // Only landlords should be verified
-      if (user.role !== "landlord") {
-        return res.status(400).json({ message: "Only landlords can be verified" });
-      }
-
-      user.isVerified = isVerified;
-      await user.save();
-
-      res.json({
-        success: true,
-        message: isVerified ? "Landlord verified" : "Landlord unverified",
-        user: {
-          _id: user._id,
-          name: user.name,
-          email: user.email,
-          role: user.role,
-          address: user.address,
-          phone: user.phone,
-          isVerified: user.isVerified,
-        },
-      });
-    } catch (err) {
-      console.error("Admin verify landlord error:", err);
-      res.status(500).json({ message: "Server error" });
+    if (typeof isVerified !== "boolean") {
+      return res.status(400).json({ message: "isVerified must be boolean" });
     }
+
+    const user = await User.findById(id);
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    // Only landlords should be verified
+    if (user.role !== "landlord") {
+      return res.status(400).json({ message: "Only landlords can be verified" });
+    }
+
+    user.isVerified = isVerified;
+    await user.save();
+
+    res.json({
+      success: true,
+      message: isVerified ? "Landlord verified" : "Landlord unverified",
+      user: {
+        _id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        address: user.address,
+        phone: user.phone,
+        isVerified: user.isVerified,
+      },
+    });
+  } catch (err) {
+    console.error("Admin verify landlord error:", err);
+    res.status(500).json({ message: "Server error" });
   }
-);
+});
 
 /**
  * DELETE /api/admin/users/:id
@@ -184,13 +181,19 @@ router.delete("/users/:id", authMiddleware, roleMiddleware("admin"), async (req,
  * GET /api/admin/houses
  * Admin: view all houses uploaded by landlords
  * Query (optional): ?status=available|rented  ?search=ramnagar
+ *
+ * ✅ Now also supports:
+ * ?verificationStatus=pending|approved|rejected
  */
 router.get("/houses", authMiddleware, roleMiddleware("admin"), async (req, res) => {
   try {
-    const { status, search } = req.query;
+    const { status, search, verificationStatus } = req.query;
 
     const query = {};
     if (status) query.status = status;
+
+    // ✅ filter by verification status if provided
+    if (verificationStatus) query.verificationStatus = verificationStatus;
 
     if (search) {
       const regex = new RegExp(search, "i");
@@ -204,13 +207,54 @@ router.get("/houses", authMiddleware, roleMiddleware("admin"), async (req, res) 
     }
 
     // Populate landlord details (name/email/phone)
-    const houses = await House.find(query)
-      .sort({ createdAt: -1 })
-      .populate("landlordId", "name email phone");
+    const houses = await House.find(query).sort({ createdAt: -1 }).populate("landlordId", "name email phone");
 
     res.json({ success: true, houses });
   } catch (err) {
     console.error("Admin get houses error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+/**
+ * ✅ NEW
+ * PATCH /api/admin/houses/:id/verify
+ * Admin: approve/reject a house
+ * body: { status: "approved" | "rejected", reason?: "..." }
+ */
+router.patch("/houses/:id/verify", authMiddleware, roleMiddleware("admin"), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status, reason } = req.body;
+
+    if (!["approved", "rejected"].includes(status)) {
+      return res.status(400).json({ message: "Invalid status. Use approved or rejected." });
+    }
+
+    const house = await House.findById(id).populate("landlordId", "name email phone");
+    if (!house) return res.status(404).json({ message: "House not found" });
+
+    house.verificationStatus = status;
+
+    if (status === "approved") {
+      house.verifiedAt = new Date();
+      house.verifiedBy = req.user._id;
+      house.rejectReason = "";
+    } else {
+      house.verifiedAt = null;
+      house.verifiedBy = null;
+      house.rejectReason = String(reason || "Rejected by admin");
+    }
+
+    await house.save();
+
+    res.json({
+      success: true,
+      message: `House ${status} successfully`,
+      house,
+    });
+  } catch (err) {
+    console.error("Admin verify house error:", err);
     res.status(500).json({ message: "Server error" });
   }
 });
@@ -234,5 +278,65 @@ router.delete("/houses/:id", authMiddleware, roleMiddleware("admin"), async (req
     res.status(500).json({ message: "Server error" });
   }
 });
+
+/**
+ * ✅ UPDATED (FIX)
+ * GET /api/admin/houses/:id/bill/view
+ * Opens electricity bill inline (NEW TAB PREVIEW, not download)
+ *
+ * Fix: set headers using real upstream content-type and also handle redirects.
+ */
+router.get(
+  "/houses/:id/bill/view",
+  authMiddleware,
+  roleMiddleware("admin"),
+  async (req, res) => {
+    try {
+      const house = await House.findById(req.params.id).select(
+        "electricityBillUrl electricityBillType"
+      );
+
+      if (!house) return res.status(404).json({ message: "House not found" });
+      if (!house.electricityBillUrl) return res.status(404).json({ message: "Bill not found" });
+
+      const fetchAndPipe = (fileUrl) => {
+        const client = fileUrl.startsWith("https") ? https : http;
+
+        client
+          .get(fileUrl, (stream) => {
+            // ✅ follow redirects
+            if (
+              stream.statusCode >= 300 &&
+              stream.statusCode < 400 &&
+              stream.headers.location
+            ) {
+              return fetchAndPipe(stream.headers.location);
+            }
+
+            // ✅ use real content-type from cloudinary (most important)
+            const contentType =
+              house.electricityBillType ||
+              stream.headers["content-type"] ||
+              "application/pdf";
+
+            res.setHeader("Content-Type", contentType);
+            res.setHeader("Content-Disposition", 'inline; filename="electricity-bill"');
+            res.setHeader("X-Content-Type-Options", "nosniff");
+
+            stream.pipe(res);
+          })
+          .on("error", (err) => {
+            console.error("Bill stream error:", err);
+            res.status(500).json({ message: "Failed to load bill" });
+          });
+      };
+
+      fetchAndPipe(house.electricityBillUrl);
+    } catch (err) {
+      console.error("Bill view error:", err);
+      res.status(500).json({ message: "Server error" });
+    }
+  }
+);
 
 module.exports = router;

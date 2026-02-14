@@ -1,3 +1,4 @@
+// routes/houses.js
 const express = require("express");
 const House = require("../models/House");
 const authMiddleware = require("../middleware/auth");
@@ -12,8 +13,8 @@ router.get("/", async (req, res) => {
   try {
     const { location, minRent, maxRent, type, beds, search } = req.query;
 
-    // ✅ Only show available houses by default
-    let query = { status: "available" };
+    // ✅ Tenants should only see AVAILABLE + ADMIN APPROVED houses
+    let query = { status: "available", verificationStatus: "approved" };
 
     if (location) {
       query.location = { $regex: location, $options: "i" };
@@ -102,7 +103,7 @@ router.post("/", authMiddleware, roleMiddleware("landlord"), async (req, res) =>
       location,
       rent,
       deposit,
-      bookingAmount, // ✅ ADD
+      bookingAmount,
       type,
       beds,
       baths,
@@ -111,6 +112,10 @@ router.post("/", authMiddleware, roleMiddleware("landlord"), async (req, res) =>
       amenities,
       images,
       availability,
+
+      // ✅ NEW: electricity bill proof
+      electricityBillUrl,
+      electricityBillType,
     } = req.body;
 
     // Validation
@@ -122,6 +127,11 @@ router.post("/", authMiddleware, roleMiddleware("landlord"), async (req, res) =>
       return res.status(400).json({ message: "Rent and deposit must be positive numbers" });
     }
 
+    // ✅ Electricity bill is mandatory
+    if (!electricityBillUrl) {
+      return res.status(400).json({ message: "Electricity bill is required" });
+    }
+
     const house = new House({
       landlordId: req.user._id,
       title,
@@ -130,7 +140,6 @@ router.post("/", authMiddleware, roleMiddleware("landlord"), async (req, res) =>
       rent: Number(rent),
       deposit: Number(deposit),
 
-      // ✅ Save bookingAmount (default 0)
       bookingAmount: Number(bookingAmount || 0),
 
       type,
@@ -142,6 +151,16 @@ router.post("/", authMiddleware, roleMiddleware("landlord"), async (req, res) =>
       images,
       availability,
 
+      // ✅ Save electricity bill
+      electricityBillUrl,
+      electricityBillType: electricityBillType || "",
+
+      // ✅ House is created as pending for admin approval
+      verificationStatus: "pending",
+      verifiedAt: null,
+      verifiedBy: null,
+      rejectReason: "",
+
       // ✅ Default availability status
       status: "available",
       currentTenantId: null,
@@ -151,7 +170,7 @@ router.post("/", authMiddleware, roleMiddleware("landlord"), async (req, res) =>
 
     res.status(201).json({
       success: true,
-      message: "House created successfully",
+      message: "House submitted for verification (pending admin approval)",
       house,
     });
   } catch (error) {
@@ -195,10 +214,16 @@ router.put(
 
       // Prevent changing landlordId
       delete updates.landlordId;
-      delete updates.currentTenantId; // ✅ landlord shouldn't set tenant directly
-      delete updates.status;          // ✅ landlord shouldn't force rented/available
+      delete updates.currentTenantId;
+      delete updates.status;
 
-      // ✅ Normalize numeric fields (important)
+      // ✅ Landlord cannot approve/reject themselves
+      delete updates.verificationStatus;
+      delete updates.verifiedAt;
+      delete updates.verifiedBy;
+      delete updates.rejectReason;
+
+      // ✅ Normalize numeric fields
       const numericFields = ["rent", "deposit", "bookingAmount", "beds", "baths", "area"];
       for (const f of numericFields) {
         if (updates[f] !== undefined) updates[f] = Number(updates[f] || 0);
@@ -254,7 +279,11 @@ router.get("/:id/payment", authMiddleware, async (req, res) => {
     const house = await House.findById(req.params.id).populate("landlordId", "name upiId");
     if (!house) return res.status(404).json({ message: "House not found" });
 
-    // ✅ prevent payments on non-available house
+    // ✅ Only allow payment for APPROVED + AVAILABLE houses
+    if (house.verificationStatus !== "approved") {
+      return res.status(400).json({ message: "This house is not verified by admin yet" });
+    }
+
     if (house.status && house.status !== "available") {
       return res.status(400).json({ message: "This house is not available anymore" });
     }

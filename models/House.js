@@ -77,6 +77,21 @@ const houseSchema = new mongoose.Schema(
 
     amenities: [{ type: String }],
     images: [{ type: String }],
+      // ✅ Electricity bill proof (PDF/JPG/PNG)
+  electricityBillUrl: { type: String, default: "" },
+  electricityBillType: { type: String, default: "" }, // e.g. application/pdf, image/png
+
+  // ✅ Admin verification for listing
+  verificationStatus: {
+    type: String,
+    enum: ["pending", "approved", "rejected"],
+    default: "pending",
+    index: true,
+  },
+  verifiedAt: { type: Date, default: null },
+  verifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+  rejectReason: { type: String, default: "" },
+
 
     availability: {
       type: Date,
