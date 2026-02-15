@@ -1,24 +1,40 @@
 // utils/sendEmail.js
-const sgMail = require("@sendgrid/mail");
+const { Resend } = require("resend");
 
-if (!process.env.SENDGRID_API_KEY) {
-  console.error("❌ SENDGRID_API_KEY missing");
+if (!process.env.RESEND_API_KEY) {
+  console.error("❌ RESEND_API_KEY missing");
 }
 
-sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+const resend = new Resend(process.env.RESEND_API_KEY);
 
-console.log("✅ SendGrid Web API initialized");
+console.log("✅ Resend API initialized");
 
 /* =========================
    SAFE SEND (never breaks API)
 ========================= */
-async function safeSend(msg, label) {
+async function safeSend({ to, subject, html, text }, label) {
   try {
-    await sgMail.send(msg);
+    const fromEmail = process.env.FROM_EMAIL; // e.g. noreply@apnahome.site
+    const fromName = process.env.FROM_NAME || "HomeRent";
+
+    if (!fromEmail) {
+      console.error("❌ FROM_EMAIL missing");
+      return false;
+    }
+
+    await resend.emails.send({
+      from: `${fromName} <${fromEmail}>`,
+      to,
+      subject,
+      html,
+      text, // optional fallback
+    });
+
     console.log(`✅ ${label} sent`);
     return true;
   } catch (err) {
-    console.error(`❌ ${label} failed`, err?.response?.body || err.message);
+    // Resend errors are usually in err.message; sometimes err.response
+    console.error(`❌ ${label} failed`, err?.message || err);
     return false;
   }
 }
@@ -30,10 +46,6 @@ async function sendOtpEmail(to, otp) {
   return safeSend(
     {
       to,
-      from: {
-        email: process.env.FROM_EMAIL, // must be verified in SendGrid
-        name: "HomeRent",
-      },
       subject: "Your HomeRent OTP Code",
       html: `
         <div style="font-family: Arial; line-height: 1.6">
@@ -43,6 +55,7 @@ async function sendOtpEmail(to, otp) {
           <p>This OTP expires in <b>10 minutes</b>.</p>
         </div>
       `,
+      text: `HomeRent OTP: ${otp} (expires in 10 minutes)`,
     },
     "OTP_EMAIL"
   );
@@ -55,10 +68,6 @@ async function sendResetPasswordOtpEmail(to, otp) {
   return safeSend(
     {
       to,
-      from: {
-        email: process.env.FROM_EMAIL,
-        name: "HomeRent",
-      },
       subject: "HomeRent Password Reset OTP",
       html: `
         <div style="font-family: Arial; line-height: 1.6">
@@ -69,6 +78,7 @@ async function sendResetPasswordOtpEmail(to, otp) {
           <p>If you didn’t request this, ignore this email.</p>
         </div>
       `,
+      text: `HomeRent password reset OTP: ${otp} (expires in 10 minutes). If you didn't request this, ignore.`,
     },
     "RESET_PASSWORD_OTP_EMAIL"
   );

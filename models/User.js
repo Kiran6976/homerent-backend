@@ -78,13 +78,12 @@ const userSchema = new mongoose.Schema(
       trim: true,
     },
 
-    // 🔐 NEW: Hash for uniqueness enforcement
+    // 🔐 Hash for uniqueness enforcement (landlords)
     aadhaarHash: {
       type: String,
       default: null,
-      unique: true,
-      sparse: true, // allows multiple nulls
       select: false,
+      // ❌ DO NOT add index:true here, we add it via schema.index() below
     },
 
     aadhaarVerified: {
@@ -115,10 +114,22 @@ const userSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+/**
+ * ✅ PARTIAL UNIQUE INDEX
+ * Unique ONLY when aadhaarHash is a string.
+ * Tenants (null) will NOT conflict.
+ */
+userSchema.index(
+  { aadhaarHash: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { aadhaarHash: { $type: "string" } },
+  }
+);
+
 // ================================
 // 🔒 Password Hash Middleware
 // ================================
-
 userSchema.pre("save", async function () {
   if (!this.isModified("passwordHash")) return;
 
@@ -129,7 +140,6 @@ userSchema.pre("save", async function () {
 // ================================
 // 🔐 Compare Password
 // ================================
-
 userSchema.methods.comparePassword = async function (plainPassword) {
   if (!plainPassword || !this.passwordHash) return false;
   return bcrypt.compare(plainPassword, this.passwordHash);
