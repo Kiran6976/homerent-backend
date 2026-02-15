@@ -18,6 +18,16 @@ const generateOtp = () => String(Math.floor(100000 + Math.random() * 900000)); /
 const cleanAadhaar = (v) => String(v || "").replace(/\D/g, "").slice(0, 12);
 const isValidAadhaarFormat = (v) => /^\d{12}$/.test(v);
 
+// ✅ Aadhaar hash (for uniqueness)
+// Env: AADHAAR_HASH_PEPPER (any long secret string)
+const hashAadhaar = (plain12) => {
+  const pepper = process.env.AADHAAR_HASH_PEPPER || "";
+  return crypto
+    .createHash("sha256")
+    .update(String(plain12) + pepper)
+    .digest("hex");
+};
+
 // ✅ Encryption helpers (AES-256-GCM)
 // Env: AADHAAR_ENC_KEY (hex 64 chars OR base64 32 bytes)
 const getEncKey = () => {
@@ -110,6 +120,7 @@ router.post("/register", async (req, res) => {
     let aadhaarCleaned = null;
     let aadhaarLast4 = null;
     let aadhaarEnc = null;
+    let aadhaarHash = null; // ✅ NEW
 
     if (String(role) === "landlord") {
       aadhaarCleaned = cleanAadhaar(aadhaarNumber);
@@ -118,6 +129,9 @@ router.post("/register", async (req, res) => {
       }
       aadhaarLast4 = aadhaarCleaned.slice(-4);
       aadhaarEnc = encryptAadhaar(aadhaarCleaned);
+
+      // ✅ NEW: stable hash for uniqueness
+      aadhaarHash = hashAadhaar(aadhaarCleaned);
     }
 
     const existingUser = await User.findOne({ email: lowerEmail });
@@ -127,6 +141,18 @@ router.post("/register", async (req, res) => {
       // if already verified, block
       if (existingUser.isVerified) {
         return res.status(400).json({ message: "Email already registered" });
+      }
+
+      // ✅ If landlord: check Aadhaar uniqueness (exclude same user)
+      if (String(role) === "landlord") {
+        const conflict = await User.findOne({
+          aadhaarHash,
+          _id: { $ne: existingUser._id },
+        }).select("_id");
+
+        if (conflict) {
+          return res.status(400).json({ message: "Aadhaar already registered with another account" });
+        }
       }
 
       // if not verified, resend OTP
@@ -146,12 +172,20 @@ router.post("/register", async (req, res) => {
       if (String(role) === "landlord") {
         existingUser.aadhaarLast4 = aadhaarLast4;
         existingUser.aadhaarEnc = aadhaarEnc;
+
+        // ✅ NEW
+        existingUser.aadhaarHash = aadhaarHash;
+
         existingUser.aadhaarVerified = false;
         existingUser.aadhaarVerificationNote = "";
       } else {
         // if switching away from landlord during re-register, clear
         existingUser.aadhaarLast4 = null;
         existingUser.aadhaarEnc = null;
+
+        // ✅ NEW
+        existingUser.aadhaarHash = null;
+
         existingUser.aadhaarVerified = false;
         existingUser.aadhaarVerificationNote = "";
       }
@@ -166,6 +200,15 @@ router.post("/register", async (req, res) => {
         success: true,
         message: "OTP resent. Please verify your email.",
       });
+    }
+
+    // ✅ NEW USER FLOW
+    // ✅ If landlord: check Aadhaar uniqueness before creating user
+    if (String(role) === "landlord") {
+      const conflict = await User.findOne({ aadhaarHash }).select("_id");
+      if (conflict) {
+        return res.status(400).json({ message: "Aadhaar already registered with another account" });
+      }
     }
 
     // Create new user
@@ -188,6 +231,10 @@ router.post("/register", async (req, res) => {
       // ✅ Aadhaar (only for landlords)
       aadhaarLast4: String(role) === "landlord" ? aadhaarLast4 : null,
       aadhaarEnc: String(role) === "landlord" ? aadhaarEnc : null,
+
+      // ✅ NEW
+      aadhaarHash: String(role) === "landlord" ? aadhaarHash : null,
+
       aadhaarVerified: false,
       aadhaarVerificationNote: "",
     });
@@ -201,6 +248,12 @@ router.post("/register", async (req, res) => {
     });
   } catch (err) {
     console.error("Registration error:", err);
+
+    // ✅ NEW: handle duplicate Aadhaar hash unique index
+    if (err && err.code === 11000 && err.keyPattern?.aadhaarHash) {
+      return res.status(400).json({ message: "Aadhaar already registered with another account" });
+    }
+
     return res.status(500).json({ message: err.message || "Server error" });
   }
 });
