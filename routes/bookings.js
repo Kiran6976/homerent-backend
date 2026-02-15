@@ -6,6 +6,9 @@ const House = require("../models/House");
 const User = require("../models/User");
 const Booking = require("../models/Booking");
 
+// ✅ NEW: email helper
+const { sendBookingPaymentSubmittedEmail } = require("../utils/sendEmail");
+
 const router = express.Router();
 
 /**
@@ -369,7 +372,7 @@ router.post("/:id/mark-paid", auth, roleMiddleware("tenant"), async (req, res) =
       return res.status(400).json({ message: `Cannot submit payment from status: ${booking.status}` });
     }
 
-    const house = await House.findById(booking.houseId).select("status currentTenantId");
+    const house = await House.findById(booking.houseId).select("status currentTenantId title location bookingAmount");
     if (house && (house.status === "rented" || house.currentTenantId)) {
       return res.status(400).json({ message: "This house is already rented." });
     }
@@ -388,6 +391,24 @@ router.post("/:id/mark-paid", auth, roleMiddleware("tenant"), async (req, res) =
     });
 
     await booking.save();
+
+    // ✅ NEW: send email to tenant (non-blocking)
+    try {
+      const tenant = await User.findById(req.user._id).select("name email");
+      if (tenant?.email) {
+        await sendBookingPaymentSubmittedEmail(tenant.email, {
+          tenantName: tenant.name,
+          bookingId: String(booking._id),
+          houseTitle: house?.title || "",
+          houseLocation: house?.location || "",
+          amount: booking.amount,
+          utr,
+          submittedAt: booking.paymentSubmittedAt,
+        });
+      }
+    } catch (e) {
+      console.error("Booking payment submitted email failed:", e?.message || e);
+    }
 
     return res.json({
       success: true,

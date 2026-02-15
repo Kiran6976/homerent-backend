@@ -2,12 +2,15 @@
 const express = require("express");
 const crypto = require("crypto");
 const https = require("https"); // ✅ NEW (for bill preview)
-const http = require("http");   // ✅ NEW (for bill preview)
+const http = require("http"); // ✅ NEW (for bill preview)
 
 const User = require("../models/User");
 const House = require("../models/House");
 const authMiddleware = require("../middleware/auth");
 const { roleMiddleware } = require("../middleware/role");
+
+// ✅ NEW: email services for house approve/reject
+const { sendHouseApprovedEmail, sendHouseRejectedEmail } = require("../utils/sendEmail");
 
 const router = express.Router();
 
@@ -247,6 +250,36 @@ router.patch("/houses/:id/verify", authMiddleware, roleMiddleware("admin"), asyn
     }
 
     await house.save();
+
+    // ✅ NEW: notify landlord about approve/reject (non-blocking)
+    (async () => {
+      try {
+        const landlord = house.landlordId;
+        const landlordEmail = landlord?.email;
+        if (!landlordEmail) return;
+
+        if (status === "approved") {
+          await sendHouseApprovedEmail(landlordEmail, {
+            landlordName: landlord?.name,
+            houseId: String(house._id),
+            title: house.title,
+            location: house.location,
+            approvedAt: house.verifiedAt || new Date(),
+          });
+        } else {
+          await sendHouseRejectedEmail(landlordEmail, {
+            landlordName: landlord?.name,
+            houseId: String(house._id),
+            title: house.title,
+            location: house.location,
+            rejectedAt: new Date(),
+            reason: house.rejectReason || "Rejected by admin",
+          });
+        }
+      } catch (e) {
+        console.error("❌ Landlord email (house verify) failed:", e?.message || e);
+      }
+    })();
 
     res.json({
       success: true,

@@ -1,8 +1,12 @@
 // routes/houses.js
 const express = require("express");
 const House = require("../models/House");
+const User = require("../models/User"); // ✅ NEW
 const authMiddleware = require("../middleware/auth");
 const { roleMiddleware, ownerMiddleware } = require("../middleware/role");
+
+// ✅ NEW: email service import
+const { sendAdminHouseSubmittedEmail } = require("../utils/sendEmail");
 
 const router = express.Router();
 
@@ -167,6 +171,43 @@ router.post("/", authMiddleware, roleMiddleware("landlord"), async (req, res) =>
     });
 
     await house.save();
+
+    // ✅ NEW: notify all admins (non-blocking, never breaks API)
+    (async () => {
+      try {
+        const landlord = await User.findById(req.user._id).select("name email phone role");
+        const admins = await User.find({ role: "admin" }).select("email name").lean();
+
+        const adminEmails = (admins || []).map((a) => a?.email).filter(Boolean);
+
+        if (!adminEmails.length) {
+          console.log("ℹ️ No admin emails found to notify for house submission");
+          return;
+        }
+
+        const payload = {
+          houseId: String(house._id),
+          title: house.title,
+          location: house.location,
+          rent: house.rent,
+          deposit: house.deposit,
+          bookingAmount: house.bookingAmount,
+          type: house.type,
+          beds: house.beds,
+          baths: house.baths,
+          furnished: !!house.furnished,
+          landlordName: landlord?.name,
+          landlordEmail: landlord?.email,
+          landlordPhone: landlord?.phone,
+          submittedAt: house.createdAt || new Date(),
+        };
+
+        // Send to each admin separately (privacy)
+        await Promise.allSettled(adminEmails.map((email) => sendAdminHouseSubmittedEmail(email, payload)));
+      } catch (e) {
+        console.error("❌ Admin notify (house submitted) failed:", e?.message || e);
+      }
+    })();
 
     res.status(201).json({
       success: true,

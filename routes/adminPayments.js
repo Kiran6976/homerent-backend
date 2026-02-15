@@ -2,8 +2,12 @@
 const express = require("express");
 const Booking = require("../models/Booking");
 const House = require("../models/House");
+const User = require("../models/User");
 const authMiddleware = require("../middleware/auth");
 const requireAdmin = require("../middleware/requireAdmin");
+
+// ✅ NEW: email helper
+const { sendBookingPayoutTransferredEmail } = require("../utils/sendEmail");
 
 const router = express.Router();
 
@@ -231,6 +235,26 @@ router.post("/bookings/:id/mark-transferred", authMiddleware, requireAdmin, asyn
       .populate("tenantId", "name email phone")
       .populate("landlordId", "name email phone upiId")
       .populate("houseId", "title location rent bookingAmount");
+
+    // ✅ NEW: send email to landlord (non-blocking)
+    try {
+      const landlordEmail = populated?.landlordId?.email;
+      if (landlordEmail) {
+        await sendBookingPayoutTransferredEmail(landlordEmail, {
+          landlordName: populated?.landlordId?.name,
+          bookingId: String(populated._id),
+          houseTitle: populated?.houseId?.title || "",
+          houseLocation: populated?.houseId?.location || "",
+          amount: populated?.amount,
+          payoutUtr: payoutTxnId,
+          payoutAt: populated?.payoutAt,
+          tenantName: populated?.tenantId?.name || "",
+          tenantEmail: populated?.tenantId?.email || "",
+        });
+      }
+    } catch (e) {
+      console.error("Booking payout transferred email failed:", e?.message || e);
+    }
 
     return res.json({ success: true, message: "Marked as transferred", booking: populated });
   } catch (err) {
