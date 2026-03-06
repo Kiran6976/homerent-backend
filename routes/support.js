@@ -2,6 +2,7 @@ const express = require("express");
 const authMiddleware = require("../middleware/auth");
 const SupportTicket = require("../models/SupportTicket");
 const SupportMessage = require("../models/SupportMessage");
+const { sendSupportTicketClosedEmail } = require("../utils/sendEmail");
 
 const router = express.Router();
 
@@ -147,6 +148,41 @@ router.post("/tickets/:id/messages", authMiddleware, async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     console.error("User send message error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+/**
+ * PATCH /api/support/tickets/:id/close
+ * ✅ Tenant/Landlord closes their own ticket → receives appreciation email
+ */
+router.patch("/tickets/:id/close", authMiddleware, async (req, res) => {
+  try {
+    const ticket = await SupportTicket.findOne({
+      _id: req.params.id,
+      userId: req.user._id,
+    });
+
+    if (!ticket) return res.status(404).json({ message: "Ticket not found" });
+
+    if (ticket.status === "closed") {
+      return res.status(400).json({ message: "Ticket is already closed." });
+    }
+
+    ticket.status = "closed";
+    await ticket.save();
+
+    // 🔥 Fire appreciation email — non-blocking, will never crash the API
+    sendSupportTicketClosedEmail(req.user.email, {
+      userName: req.user.name,
+      ticketId: ticket._id.toString(),
+      subject: ticket.subject,
+      closedAt: new Date(),
+    }).catch(() => { }); // safeSend already logs internally
+
+    res.json({ success: true, message: "Ticket closed" });
+  } catch (err) {
+    console.error("Close ticket error:", err);
     res.status(500).json({ message: "Server error" });
   }
 });

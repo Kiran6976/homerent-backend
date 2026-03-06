@@ -600,6 +600,37 @@ async function sendHouseRejectedEmail(to, payload) {
   );
 }
 
+/* =========================
+   ✅ SUPPORT TICKET CLOSED (Tenant / Landlord)
+========================= */
+async function sendSupportTicketClosedEmail(to, payload) {
+  const { userName, ticketId, subject, closedAt } = payload || {};
+
+  const html = wrapNoticeEmail({
+    title: "Thank you for reaching out 🙏",
+    subtitle: `Hi ${userName || "there"}, your support ticket has been closed. We truly appreciate your patience and trust in ApnaHome. We're always here if you need us again!`,
+    badge: "Ticket Closed",
+    rows: [
+      { label: "Ticket ID", value: ticketId },
+      { label: "Subject", value: subject || "—" },
+      { label: "Closed at", value: fmtDateTime(closedAt) },
+      { label: "Status", value: "Closed" },
+    ],
+    footerNote:
+      "If you face any issues in the future, feel free to open a new support ticket. We are always ready to help! 💙",
+  });
+
+  return safeSend(
+    {
+      to,
+      subject: "ApnaHome • Your support ticket has been closed",
+      html,
+      text: `ApnaHome: Your support ticket (ID: ${ticketId}) has been closed. Thank you for contacting us!`,
+    },
+    "SUPPORT_TICKET_CLOSED_EMAIL"
+  );
+}
+
 module.exports = {
   sendOtpEmail,
   sendResetPasswordOtpEmail,
@@ -612,4 +643,7 @@ module.exports = {
   sendAdminHouseSubmittedEmail,
   sendHouseApprovedEmail,
   sendHouseRejectedEmail,
+
+  // ✅ support emails
+  sendSupportTicketClosedEmail,
 };
